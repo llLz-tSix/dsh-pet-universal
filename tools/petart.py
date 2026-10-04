@@ -165,6 +165,7 @@ class Whale:
         if angle:
             layer = layer.rotate(angle, resample=Image.NEAREST, center=PIVOT,
                                  fillcolor=(0, 0, 0, 0))
+        check_inside(layer, "the whale")
         canvas.alpha_composite(layer)
 
     def jet(self, growth):
@@ -267,9 +268,48 @@ def dust(canvas, progress, centre=(60, 84)):
 
 
 # -- encoding ---------------------------------------------------------------
-def save(frames, name, duration, preview=None):
+def check_inside(layer, what):
+    """Fail loudly if a pasted layer has run off the canvas.
+
+    The whale is big for its frame — 77 px across on a 120 px canvas — so an
+    animation that both travels and turns over can quietly start clipping, which
+    shows up as a flat edge on the sprite. Decorative bubbles are allowed to
+    drift out of frame; the creature itself is not.
+    """
+    bbox = layer.getbbox()
+    if bbox is None:
+        return
+    if bbox[0] < 0 or bbox[1] < 0 or bbox[2] > CAN or bbox[3] > CAN:
+        raise SystemExit(
+            f"{what} is clipped by the frame at {bbox}; it has outgrown the "
+            f"canvas, so reduce its travel or its rotation")
+
+
+def edge_margin(frames):
+    """Smallest distance from any drawn pixel to the frame edge, in pixels.
+
+    The whale is big for its frame — 77 px across on a 120 px canvas — so an
+    animation that both travels and turns over can quietly start clipping. That
+    reads as a flat edge on the sprite, which is easy to miss in a still and
+    obvious in motion, so it is checked rather than eyeballed.
+    """
+    worst = CAN
+    for frame in frames:
+        bbox = frame.getbbox()
+        if bbox is None:
+            continue
+        worst = min(worst, bbox[0], bbox[1], CAN - bbox[2], CAN - bbox[3])
+    return worst
+
+
+def save(frames, name, duration, preview=None, ambient=None):
     """Encode frames into a GIF with one exact palette shared by the whole set."""
     path = os.path.join(ASSETS, name)
+
+    # The creature is checked as it is placed; this is only for the record, since
+    # decorative bubbles are meant to drift out of frame.
+    margin = edge_margin(frames)
+
     rgba = [f.resize((CAN * SCALE, CAN * SCALE), Image.NEAREST) for f in frames]
 
     keys, flat = set(), []
@@ -303,12 +343,19 @@ def save(frames, name, duration, preview=None):
 
     encoded[0].save(path, save_all=True, append_images=encoded[1:], duration=duration,
                     loop=0, transparency=0, disposal=2, optimize=False)
-    print("saved %-14s %2d frames  %6d ms  %6d bytes  %2d colours"
-          % (name, len(encoded), duration * len(frames), os.path.getsize(path), len(colours)))
+    if ambient is not None:
+        ambient[name] = duration * len(frames)
+
+    print("saved %-14s %2d frames  %6d ms  %6d bytes  %2d colours  margin %d"
+          % (name, len(encoded), duration * len(frames), os.path.getsize(path),
+             len(colours), margin))
 
     if preview:
-        sheet = Image.new("RGB", (len(preview) * 120, 120), (18, 26, 54))
-        for i, index in enumerate(preview):
+        # Clamp, so a stale preview index after a timing change does not kill the
+        # whole build at the very end of a two-minute run.
+        picks = [min(index, len(frames) - 1) for index in preview]
+        sheet = Image.new("RGB", (len(picks) * 120, 120), (18, 26, 54))
+        for i, index in enumerate(picks):
             cell = Image.new("RGB", (CAN, CAN), (18, 26, 54))
             cell.paste(frames[index], (0, 0), frames[index])
             sheet.paste(cell.resize((120, 120), Image.NEAREST), (i * 120, 0))

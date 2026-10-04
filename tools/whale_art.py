@@ -136,7 +136,10 @@ def draw_tick(canvas, dy=0):
                 pixels[x, y + dy] = DARK
 
 
-SPARKLES = [(30, 26, 14, 0), (92, 74, 14, 5), (36, 78, 18, 9), (86, 22, 18, 2)]
+# Sparkle periods must divide the loop length exactly, or the twinkles jump at
+# the seam: 36/14 leaves a remainder, so the pattern restarted mid-flicker and
+# the tick looked like it was glitching once per cycle.
+SPARKLES = [(30, 26, 12, 0), (92, 74, 12, 5), (36, 78, 18, 9), (86, 22, 18, 2)]
 
 
 # ------------------------------------------------------------------- idle
@@ -159,7 +162,10 @@ def idle_frames():
 
 
 # ------------------------------------------------------- idle: big bubble
-FOAM_FRAMES, FOAM_DUR = 48, 60
+# Same length and the same ambient-bubble phase as the plain loop. When the two
+# differed, switching between them teleported every bubble in the scene, because
+# the layers are crossfaded while both keep running.
+FOAM_FRAMES, FOAM_DUR = 36, 60
 
 
 def foam_frames():
@@ -175,14 +181,14 @@ def foam_frames():
         phase = t / FOAM_FRAMES
         dy = round(2.0 * math.sin(2 * math.pi * phase))
         # A small flinch when the bubble pops.
-        if 31 <= t <= 34:
-            dy += (2, 3, 1, 0)[t - 31]
+        if 26 <= t <= 29:
+            dy += (2, 3, 1, 0)[t - 26]
         canvas = blank()
         stamp_bubbles(canvas, phase, front=False)
 
-        if 6 <= t <= 36:
-            growth = min(1.0, (t - 6) / 10.0)
-            climb = (t - 6) / 30.0
+        if 5 <= t <= 31:
+            growth = min(1.0, (t - 5) / 11.0)
+            climb = (t - 5) / 26.0
             radius = 2 + 5 * growth
             x = int(round(cx + 3 * math.sin(2 * math.pi * climb * 1.5)))
             y = int(round(cy - 6 - climb * 34))
@@ -197,9 +203,9 @@ def foam_frames():
                     pixels[bx, by] = C_SOFT if i % 7 else WHITE
             canvas.alpha_composite(bubble)
             whale.place(canvas, whale.face("open"), dy=dy)
-        elif 37 <= t <= 43:
+        elif 32 <= t <= 35:
             whale.place(canvas, whale.face("open"), dy=dy)
-            ring(canvas, 6 + (t - 37) * 2, WHITE if t < 40 else C_PALE,
+            ring(canvas, 6 + (t - 32) * 2, WHITE if t < 34 else C_PALE,
                  centre=(cx, cy - 40), step=3)
         else:
             whale.place(canvas, whale.face("open"), dy=dy)
@@ -384,120 +390,115 @@ def float_frames():
 
 # --------------------------------------------------------------------- joy
 JOY_FRAMES, JOY_DUR = 54, 40
-GRAV = 0.30
-TIP = (28.5 + OFF[0], 28.5 + OFF[1])
-SPRAY = []
-
-for _bf, _dx, _spread in ((13, -0.35, -2.3), (15, 0.30, -2.6), (18, -0.15, -2.9),
-                          (20, 0.45, -2.4), (22, -0.40, -2.7)):
-    SPRAY.append((_bf, TIP[0] + _dx * 4, TIP[1] - 20, _dx, _spread, 15))
-for _e in range(32, 46):
-    _a = 2 * math.pi * (_e - 32) / 14.0 + 0.5
-    _v = 1.9 + 0.30 * ((_e - 32) % 3)
-    SPRAY.append((_e, PIVOT[0] + 20.0 * math.cos(_a), PIVOT[1] + 20.0 * math.sin(_a),
-                  _v * math.cos(_a), _v * math.sin(_a), 9))
-for _i in range(7):
-    _a = math.pi * (0.12 + 0.13 * _i)
-    SPRAY.append((49 + (_i % 2), PIVOT[0] + 20 * math.cos(_a), PIVOT[1] + 26,
-                  -2.6 * math.cos(_a), -2.4 - 0.30 * _i, 9))
-
-T_SPOUT, T_PEAK, T_WIND = 10, 24, 27
-T_FLIP, T_LAND = 31, 48
-WINDUP = 16.0
+# A wide, tall eight. The whale is 77 px across on a 120 px canvas, so while it
+# is merely banked there are sixteen pixels of travel available each way.
+JOY_AX, JOY_AY = 15.0, 26.0
+# Where the somersaults happen, as a fraction of the loop, and how long each one
+# takes. They sit at the crossing: rolling needs 47 px of clearance from the
+# centre and the frame only offers 60, so the whale can only turn over where the
+# path itself passes near the middle. Two turns per loop is also a whole number,
+# which is what keeps the loop seamless.
+JOY_SPIN = 0.075
+JOY_SPINS = (-JOY_SPIN, 0.5 - JOY_SPIN)
+# How far the body banks at the apexes. A fish leans into the turn, but the
+# lean is expensive: it is the lean, not the width of the path, that uses up the
+# clearance the somersault needs, so it stays small.
+JOY_TILT = 6.0
 
 
-def ease_out(k, p=2.0):
-    return 1 - (1 - k) ** p
+def joy_path(t):
+    """Where the whale is on its figure-eight, in canvas pixels from centre."""
+    theta = 2 * math.pi * t / JOY_FRAMES
+    return JOY_AX * math.sin(theta), (JOY_AY / 2.0) * math.sin(2 * theta)
 
 
-def angle_at(t):
-    """Clockwise somersault: PIL rotates counter-clockwise, so angles go negative."""
-    if t < T_WIND:
-        return 0.0
-    if t < T_FLIP:
-        return WINDUP * ease_out((t - T_WIND) / 4.0)
-    if t < T_LAND - 1:
-        u = (t - T_FLIP) / float(T_LAND - 1 - T_FLIP)
-        return WINDUP - 360.0 * (1 - (1 - u) ** 1.3)
-    u = min(1.0, (t - (T_LAND - 1)) / 6.0)
-    return (WINDUP - 360.0) - WINDUP * u
+def joy_roll(u):
+    """Rotation, in degrees, at a point in the loop.
 
-
-def dy_at(t):
-    if t < 4:
-        return 0
-    if t < T_SPOUT:
-        return round(4 * math.sin((t - 4) / 5.0 * math.pi / 2))
-    if t < T_PEAK:
-        return round(4 - 9 * (t - T_SPOUT) / 13.0)
-    if t < T_WIND:
-        return -5
-    if t < T_FLIP:
-        return round(-5 + 2.5 * math.sin((t - T_WIND) / 4.0 * math.pi))
-    if t < T_LAND:
-        u = (t - T_FLIP) / float(T_LAND - 1 - T_FLIP)
-        return -round(2 + 11 * math.sin(math.pi * u ** 0.85))
-    return (0, 3, 3, 1, 0, 0)[t - T_LAND]
-
-
-def growth_at(t):
-    if t < T_SPOUT:
-        return 0.0
-    if t < T_PEAK:
-        return math.sin((t - T_SPOUT) / 13.0 * math.pi / 2)
-    if t < T_WIND:
-        return 1.0
-    if t < T_FLIP:
-        return 1.0 - ease_out((t - T_WIND) / 4.0, 1.6)
-    return 0.0
-
-
-def stamp_spray(canvas, t, front):
-    pixels = canvas.load()
-    for i, (birth, x0, y0, vx, vy, life) in enumerate(SPRAY):
-        if bool(i % 2) != front:               # half behind the whale, half in front
-            continue
-        age = t - birth
-        if age < 0 or age > life:
-            continue
-        px = int(round(x0 + vx * age))
-        py = int(round(y0 + vy * age + 0.5 * GRAV * age * age))
-        for dx, dy, colour in ((0, 0, WHITE), (1, 0, C_SOFT), (0, 1, C_MID), (1, 1, C_MID)):
-            if 0 <= px + dx < CAN and 0 <= py + dy < CAN:
-                pixels[px + dx, py + dy] = colour
+    The distance is taken modulo a whole loop, not modulo the half-loop between
+    the two crossings: the two windows are exactly half a loop apart, so a
+    half-loop modulus collapses them into one and counts every somersault twice,
+    which spins the whale far faster than intended and throws it out of frame.
+    """
+    total = 0.0
+    for centre in JOY_SPINS:
+        d = ((u - centre + 0.5) % 1.0) - 0.5
+        if abs(d) < JOY_SPIN:
+            k = (d + JOY_SPIN) / (2 * JOY_SPIN)
+            # Smoothstep-like, so the turn eases in and out instead of starting
+            # and stopping abruptly.
+            total += 360.0 * (k - math.sin(2 * math.pi * k) / (2 * math.pi))
+    return total
 
 
 def joy_frames():
+    """A somersault shaped like an eight.
+
+    The whale used to spin on the spot and hop off it, which read as a sprite
+    being rotated rather than a creature moving. Now it swims the crossing of a
+    lemniscate — the path of a fish turning — and somersaults twice per loop,
+    once at each crossing, where it has the room.
+
+    The first frame is the neutral pose: centred, upright, unbanked. That is what
+    makes the crossfade in from resting invisible.
+    """
     frames = []
+    wake = []
     for t in range(JOY_FRAMES):
-        angle, dy = angle_at(t), dy_at(t)
-        growth = growth_at(t)
-        # Bubbles carry on from where the float loop left off, so the switch is seamless.
-        phase = (35.0 / 36.0 + t / float(JOY_FRAMES)) % 1.0
+        u = t / JOY_FRAMES
+        theta = 2 * math.pi * u
+        x, y = joy_path(t)
+        angle = -joy_roll(u) + JOY_TILT * math.sin(2 * theta)
+        # Two short spouts, timed to the fastest part of the path.
+        growth = max(0.0, math.sin(2 * theta)) * 0.8
+
         canvas = blank()
-        stamp_bubbles(canvas, phase, front=False)
-        stamp_spray(canvas, t, front=False)
-        body = whale.face("happy") if 4 <= t <= 51 else whale.face("open")
-        whale.place(canvas, body, angle, dy)
+
+        # A wake of specks left along the path, so the movement has a trail.
+        wake.append((x, y))
+        if len(wake) > 18:
+            wake.pop(0)
+        pixels = canvas.load()
+        for i, (wx, wy) in enumerate(wake[:-1]):
+            if i % 2:
+                continue
+            px = int(round(60 + wx))
+            py = int(round(60 + wy))
+            if 0 <= px < CAN and 0 <= py < CAN:
+                age = (len(wake) - 1 - i) / 17.0
+                pixels[px, py] = C_PALE if age < 0.45 else (C_SOFT if age < 0.8 else C_MID)
+
+        whale.place(canvas, whale.face("happy"), angle, round(y), dx=round(x))
         if growth > 0:
-            whale.place(canvas, whale.jet(growth), angle, dy)
-        stamp_spray(canvas, t, front=True)
-        stamp_bubbles(canvas, phase, front=True)
+            whale.place(canvas, whale.jet(growth), angle, round(y), dx=round(x))
         frames.append(canvas)
     return frames
 
 
 # ----------------------------------------------------------------- generate
-save(idle_frames(), "Idle.gif", IDLE_DUR, preview=[0, 6, 12, 18, 21, 30])
-save(foam_frames(), "idle-bubble.gif", FOAM_DUR, preview=[0, 12, 22, 30, 33, 40])
-save(joy_frames(), "alive.gif", JOY_DUR, preview=[0, 10, 22, 33, 40, 50])
-save(thinking_frames(), "thinking.gif", THINK_DUR, preview=[0, 9, 18, 27, 30, 33])
-save(waiting_frames(), "waiting.gif", WAIT_DUR, preview=[0, 4, 9, 13, 18, 22])
+# Length of every ambient loop, so they can be checked against each other. They
+# all have to be the same: the layers run continuously and are crossfaded, so a
+# loop of a different length drifts out of step with the others and whatever the
+# scene contains — bubbles, sparkles — visibly teleports when the pet switches.
+AMBIENT_MS = {}
+save(idle_frames(), "Idle.gif", IDLE_DUR, preview=[0, 6, 12, 18, 21, 30], ambient=AMBIENT_MS)
+save(foam_frames(), "idle-bubble.gif", FOAM_DUR, preview=[0, 8, 15, 22, 27, 33], ambient=AMBIENT_MS)
+save(joy_frames(), "alive.gif", JOY_DUR, preview=[0, 10, 22, 33, 40, 50], ambient=AMBIENT_MS)
+save(thinking_frames(), "thinking.gif", THINK_DUR, preview=[0, 9, 18, 27, 30, 33], ambient=AMBIENT_MS)
+save(waiting_frames(), "waiting.gif", WAIT_DUR, preview=[0, 4, 9, 13, 18, 22], ambient=AMBIENT_MS)
+save(float_frames(), "float.gif", FLOAT_DUR, preview=[0, 6, 12, 18, 24, 30], ambient=AMBIENT_MS)
+
+# Sleep and the one-shot events are deliberately a different length: a slow bob
+# is the point of dozing off, and the transformation must not be cut short.
 save(sleep_frames(), "sleep.gif", SLEEP_DUR, preview=[0, 8, 16, 24, 32, 40])
 save(held_frames(), "held.gif", HELD_DUR, preview=[0, 2, 4, 6, 8, 10])
 save(drop_frames(), "drop.gif", DROP_DUR, preview=[0, 1, 2, 3, 5, 9])
 save(done_frames(), "done.gif", DONE_DUR, preview=[0, 4, 6, 7, 12, 20])
-save(float_frames(), "float.gif", FLOAT_DUR, preview=[0, 6, 12, 18, 24, 30])
+
+lengths = set(AMBIENT_MS.values())
+if len(lengths) != 1:
+    raise SystemExit(f"ambient loops differ in length and will drift apart: {AMBIENT_MS}")
+print("ambient loops all %d ms: %s" % (lengths.pop(), ", ".join(sorted(AMBIENT_MS))))
 
 save_mark("mark-approval.png", glyph(APPROVAL, AMBER))
 save_mark("mark-question.png", glyph(QUESTION, AMBER))

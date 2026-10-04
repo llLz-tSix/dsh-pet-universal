@@ -33,8 +33,29 @@ Faces are painted on, not drawn from scratch: the source is a single flat PNG, s
 and draws a new arc. That is how the sleeping and contented expressions exist at
 all.
 
-## Two things that will waste your afternoon
+## What the generator refuses to do
 
+Two mistakes in this art are invisible in a still frame and obvious in motion, so
+neither is left to the eye.
+
+**It will not let the whale leave the frame.** At 77 px across on a 120 px canvas
+there is not much room, and an animation that both travels and turns over eats it
+quickly — the result is a flat edge on the sprite. `check_inside()` measures the
+creature every time it is pasted and stops the build. Decorative bubbles are
+exempt on purpose: those are supposed to drift out of frame.
+
+This caught a real bug. The somersault originally needed 47 px of clearance from
+the centre while the frame offers 60, so while the whale was rolling it could only
+stray thirteen pixels sideways — and a figure-eight thirteen pixels wide is not a
+figure-eight. Moving the somersaults to the crossings of the eight, where the path
+itself passes near the middle, freed the width for a path three times as wide.
+
+**It will not let the ambient loops drift apart.** They all run at once and are
+crossfaded, so a loop of a different length desynchronises the scene and everything
+in it teleports on the next switch. The generator compares their lengths and stops
+if they disagree.
+
+## Two things that will waste your afternoon
 **A full-screen game in the foreground captures the pointer.** `SetCursorPos`
 then cannot reach the pet, the click lands on the game, and it looks exactly like
 a pet that ignores the mouse. Only the foreground process may release the
