@@ -29,4 +29,16 @@ contextBridge.exposeInMainWorld('petWindow', {
     ipcRenderer.on('pet:flash', listener)
     return () => ipcRenderer.removeListener('pet:flash', listener)
   },
+  /** The pet was let go after being carried, so it can land with a squash. */
+  onDropped: handler => {
+    const listener = () => handler()
+    ipcRenderer.on('pet:dropped', listener)
+    return () => ipcRenderer.removeListener('pet:dropped', listener)
+  },
+  /** Which way it is being carried, so it can face that way. */
+  onFacing: handler => {
+    const listener = (_event, facing) => handler(facing)
+    ipcRenderer.on('pet:facing', listener)
+    return () => ipcRenderer.removeListener('pet:facing', listener)
+  },
 })

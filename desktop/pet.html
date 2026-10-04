@@ -30,14 +30,15 @@
   /*
     Every layer is mounted at once and only their opacity changes. Swapping `src`
     would restart the GIF from frame one on each switch, so a thinking pet that
-    gets hovered would visibly stutter — and the tick would restart its fall.
+    gets hovered would visibly stutter, the tick would restart its fall, and the
+    idle variants would never finish a loop.
 
     Specificity matters too: `#pet img` is (1,0,1) and would beat a plain `#idle`
     (1,0,0), leaving every layer transparent — an invisible pet that looks
     perfectly healthy in the DOM. The state selectors below are (1,1,0), so they
     win.
   */
-  #pet img {
+  #pet .sprite {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -48,11 +49,50 @@
     -webkit-user-drag: none;
     pointer-events: none;
   }
-  body[data-state="idle"] #pet #idle         { opacity: 1; }
-  body[data-state="joy"] #pet #joy           { opacity: 1; }
-  body[data-state="thinking"] #pet #thinking { opacity: 1; }
-  body[data-state="done"] #pet #done         { opacity: 1; }
-  body[data-state="float"] #pet #float       { opacity: 1; }
+  body[data-state="idle"] #pet #idle                 { opacity: 1; }
+  body[data-state="idle-bubble"] #pet #idle-bubble   { opacity: 1; }
+  body[data-state="joy"] #pet #joy                   { opacity: 1; }
+  body[data-state="thinking"] #pet #thinking         { opacity: 1; }
+  body[data-state="waiting"] #pet #waiting           { opacity: 1; }
+  body[data-state="sleep"] #pet #sleep               { opacity: 1; }
+  body[data-state="held"] #pet #held                 { opacity: 1; }
+  body[data-state="drop"] #pet #drop                 { opacity: 1; }
+  body[data-state="done"] #pet #done                 { opacity: 1; }
+  body[data-state="float"] #pet #float               { opacity: 1; }
+
+  /*
+    Facing the way it is carried. Only the sprites are mirrored — the marks and
+    the hint are interface, not part of the creature.
+  */
+  body.mirrored #pet .sprite { transform: scaleX(-1); }
+
+  /*
+    The waiting mark. One glyph per kind of blocked interaction, drawn at 1:1 and
+    scaled up here with pixelated rendering, so it stays crisp without shipping
+    three whole animations. It pulses, because a static mark was missable in the
+    corner of the eye — which is the entire point of this state.
+  */
+  #pet .mark {
+    position: absolute;
+    left: 33%;
+    top: 5%;
+    width: 20%;
+    height: auto;
+    opacity: 0;
+    pointer-events: none;
+    -webkit-user-drag: none;
+    image-rendering: pixelated;
+    transform: translateY(0);
+  }
+  body[data-state="waiting"][data-mark="approval"] #pet #mark-approval,
+  body[data-state="waiting"][data-mark="question"] #pet #mark-question,
+  body[data-state="waiting"][data-mark="plan-review"] #pet #mark-plan-review {
+    animation: nudge 1.1s ease-in-out infinite;
+  }
+  @keyframes nudge {
+    0%, 100% { opacity: .8;  transform: translateY(0); }
+    40%      { opacity: 1;   transform: translateY(-9%); }
+  }
 
   #hint {
     position: absolute;
@@ -68,24 +108,33 @@
   body.hinting #hint { opacity: .9; }
 </style>
 </head>
-<body data-state="idle">
+<body data-state="idle" data-mark="">
   <div id="pet">
-    <img id="idle" alt="">
-    <img id="joy" alt="">
-    <img id="thinking" alt="">
-    <img id="done" alt="">
-    <img id="float" alt="">
+    <img id="idle" class="sprite" alt="">
+    <img id="idle-bubble" class="sprite" alt="">
+    <img id="joy" class="sprite" alt="">
+    <img id="thinking" class="sprite" alt="">
+    <img id="waiting" class="sprite" alt="">
+    <img id="sleep" class="sprite" alt="">
+    <img id="held" class="sprite" alt="">
+    <img id="drop" class="sprite" alt="">
+    <img id="done" class="sprite" alt="">
+    <img id="float" class="sprite" alt="">
+    <img id="mark-approval" class="mark" alt="">
+    <img id="mark-question" class="mark" alt="">
+    <img id="mark-plan-review" class="mark" alt="">
     <div id="hint">клик — открыть чат · правый клик — закрыть</div>
   </div>
 
 <script>
-  /** Layers to mount. `float` is local and never arrives from the host. */
-  const LAYERS = ['idle', 'joy', 'thinking', 'done', 'float']
-  /** States the host half is allowed to ask for. */
-  const HOST_STATES = ['idle', 'joy', 'thinking', 'done']
+  const SPRITES = ['idle', 'idle-bubble', 'joy', 'thinking', 'waiting',
+                   'sleep', 'held', 'drop', 'done', 'float']
+  /** States the host half is allowed to ask for; everything else is local. */
+  const HOST_STATES = ['idle', 'thinking', 'waiting', 'done']
+  const MARKS = ['approval', 'question', 'plan-review']
   const params = new URLSearchParams(location.search)
 
-  for (const layer of LAYERS) {
+  for (const layer of SPRITES.concat(MARKS.map(kind => `mark-${kind}`))) {
     const img = document.getElementById(layer)
     img.src = params.get(layer)
     // A sprite that fails to decode leaves an invisible window, so say so instead
@@ -93,51 +142,78 @@
     img.addEventListener('error', () => console.error('dsh-pet: cannot load ' + img.src))
   }
 
-  /** How long the transformation runs before the looping tick takes over. */
+  /** How long the clock hands over from the one-shot transformation to levitation. */
   const MORPH_MS = Number(params.get('morphMs')) || 4400
-  /** How long the pet cheers after a click. */
+  /** The cheer after a click, so a click is never silent. */
   const FLASH_MS = 1400
+  /** The landing animation's own length. */
+  const DROP_MS = 900
+  /** Calm idle before the pet dozes off. */
+  const SLEEP_AFTER_MS = 180000
+  /** Plain bobbing between showings of the bubble variant. */
+  const IDLE_DWELL_MS = 9000
+  /** The bubble variant's own length, so it is never cut off mid-event. */
+  const FOAM_MS = 2880
 
-  /** What the host half last asked for; hover overrides it without replacing it. */
   let base = HOST_STATES.includes(params.get('state')) ? params.get('state') : 'idle'
+  let mark = null
   let hovering = false
-  /**
-   * True while `done.gif` plays its one-shot transformation.
-   *
-   * The tick then stays put until the plugin says otherwise, so the animation
-   * must not loop: replaying "the whale bursts into sparks" every four seconds
-   * while the user is still reading would look like a glitch. Once the morph is
-   * over, the pet quietly switches to the seamless levitation loop.
-   */
+  let flashing = false
+  let dragging = false
+  let dropping = false
+  let sleeping = false
   let morphing = false
-  let morphTimer = null
+  let mirrored = false
+  let idleVariant = 'idle'
+  let lastActive = Date.now()
 
-  const shown = () => (base === 'done' && !morphing ? 'float' : base)
+  let flashTimer = null
+  let dropTimer = null
+  let morphTimer = null
+  let idleTimer = null
+
+  /**
+   * What to draw right now.
+   *
+   * Ordered by how immediate each thing is: being held beats a landing, a landing
+   * beats the pointer, the pointer beats whatever the plugin asked for, and the
+   * plugin's own state beats the idle daydreaming.
+   */
+  const shown = () => {
+    if (dragging) return 'held'
+    if (dropping) return 'drop'
+    if (hovering || flashing) return 'joy'
+    if (base === 'done') return morphing ? 'done' : 'float'
+    if (base === 'idle') return sleeping ? 'sleep' : idleVariant
+    return base                       // thinking | waiting
+  }
 
   const apply = () => {
-    // Hover, or a click's brief cheer, wins over whatever the plugin asked for:
-    // both are deliberate, momentary acts by the user.
-    document.body.dataset.state = (hovering || flashing) ? 'joy' : shown()
+    document.body.dataset.state = shown()
+    document.body.dataset.mark = (base === 'waiting' && mark !== null) ? mark : ''
+    document.body.classList.toggle('mirrored', mirrored)
   }
 
-  /** A short cheer after a click, so the click is never silent. */
-  let flashing = false
-  let flashTimer = null
-  const flash = () => {
-    flashing = true
-    apply()
-    if (flashTimer !== null) clearTimeout(flashTimer)
-    flashTimer = setTimeout(() => {
-      flashTimer = null
-      flashing = false
+  /** Anything the user does resets the doze countdown. */
+  const touch = () => {
+    lastActive = Date.now()
+    if (sleeping) {
+      sleeping = false
       apply()
-    }, FLASH_MS)
+    }
   }
 
-  /** Also used by the self-test, so the test exercises this exact path. */
-  window.__petSetState = next => {
-    if (!HOST_STATES.includes(next)) return
+  /**
+   * Adopt a state from the plugin.
+   *
+   * The transformation is one-shot: the tick then stays put until the plugin
+   * says otherwise, so `done.gif` must not loop. After its run the layer quietly
+   * switches to the seamless levitation loop.
+   */
+  const applyState = (next, kind) => {
     base = next
+    mark = next === 'waiting' ? kind : null
+    touch()
     if (morphTimer !== null) {
       clearTimeout(morphTimer)
       morphTimer = null
@@ -154,7 +230,16 @@
   }
 
   /** What the page is showing right now, for the self-test. */
-  window.__petShown = () => ({ base, hovering, morphing, layer: document.body.dataset.state })
+  window.__petShown = () => ({
+    base, mark, hovering, flashing, dragging, dropping, sleeping, morphing, mirrored,
+    idleVariant, layer: document.body.dataset.state,
+  })
+
+  /** Also used by the self-test, so the test exercises this exact path. */
+  window.__petSetState = next => {
+    if (!HOST_STATES.includes(next)) return
+    applyState(next, null)
+  }
 
   /**
    * Force the hover state, for the self-test only.
@@ -165,18 +250,56 @@
    */
   window.__petSetHover = next => {
     hovering = next === true
+    if (hovering) touch()
     apply()
   }
 
-  // The main process relays the plugin's state through this bridge.
-  window.petWindow.onState(state => window.__petSetState(state))
-  // A click cheers, whether or not the chat it opens was already on screen.
-  window.petWindow.onFlash(flash)
+  /** Force extras the test would otherwise have to wait minutes for. */
+  window.__petTest = {
+    setSleeping: next => { sleeping = next === true; apply() },
+    setIdleVariant: next => { idleVariant = next; apply() },
+    setMirrored: next => { mirrored = next === true; apply() },
+    setDropping: next => { dropping = next === true; apply() },
+  }
+
+  // The main process relays the plugin's state and gesture through this bridge.
+  window.petWindow.onState(message => {
+    const next = typeof message === 'string' ? message : message?.state
+    const kind = typeof message === 'string' ? null : message?.mark
+    if (!HOST_STATES.includes(next)) return
+    applyState(next, MARKS.includes(kind) ? kind : null)
+  })
+  window.petWindow.onFlash(() => {
+    flashing = true
+    apply()
+    if (flashTimer !== null) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      flashTimer = null
+      flashing = false
+      apply()
+    }, FLASH_MS)
+  })
+  window.petWindow.onDropped(() => {
+    dropping = true
+    apply()
+    if (dropTimer !== null) clearTimeout(dropTimer)
+    dropTimer = setTimeout(() => {
+      dropTimer = null
+      dropping = false
+      apply()
+    }, DROP_MS)
+  })
+  window.petWindow.onFacing(facing => {
+    // The base sprite looks left, so carrying it right mirrors it.
+    mirrored = facing === 'right'
+    apply()
+  })
   apply()
 
   // Hover shows joy. `mouseenter` does not bubble, so it is backed up by
   // `mouseover`, which does: whichever the platform delivers, the pet reacts.
   const enter = () => {
+    touch()
     if (hovering) return
     hovering = true
     apply()
@@ -196,7 +319,6 @@
   // under the pointer stops receiving mousemove within a few pixels and would
   // freeze mid-drag with a half-finished move. The main process also decides
   // whether the press was a click, and opens the chat if it was.
-  let dragging = false
   const beginDrag = () => {
     // Re-arm on EVERY press, even if the previous release never arrived.
     //
@@ -206,15 +328,18 @@
     // the pet stuck mid-gesture, and since the plugin still remembered the origin
     // of the PREVIOUS press, the next honest click would measure as a huge drag
     // and open nothing. Pressing again always starts a fresh gesture.
+    touch()
     dragging = true
     document.body.classList.add('dragging')
     window.petWindow.dragStart()
+    apply()
   }
   const finishDrag = () => {
     if (!dragging) return
     dragging = false
     document.body.classList.remove('dragging')
     window.petWindow.dragEnd()
+    apply()
   }
   addEventListener('mousedown', event => {
     if (event.button !== 0) return
@@ -237,6 +362,43 @@
   })
 
   addEventListener('keydown', event => { if (event.key === 'Escape') window.petWindow.close() })
+
+  /*
+    A plain idle loop, repeating identically forever, starts reading as a looping
+    GIF rather than a creature. Every so often the pet plays the bubble variant
+    once, in full, and then goes back to plain bobbing.
+  */
+  const scheduleIdle = () => {
+    if (idleTimer !== null) clearTimeout(idleTimer)
+    const calm = base === 'idle' && !hovering && !dragging && !dropping && !sleeping
+    if (!calm) {
+      idleTimer = setTimeout(scheduleIdle, 2000)
+      return
+    }
+    if (idleVariant === 'idle-bubble') {
+      idleVariant = 'idle'
+      apply()
+      idleTimer = setTimeout(scheduleIdle, IDLE_DWELL_MS)
+    } else if (Math.random() < 0.5) {
+      idleVariant = 'idle-bubble'
+      apply()
+      idleTimer = setTimeout(scheduleIdle, FOAM_MS)
+    } else {
+      idleTimer = setTimeout(scheduleIdle, IDLE_DWELL_MS)
+    }
+  }
+  scheduleIdle()
+
+  // Dozing: three quiet minutes and the whale nods off. Any activity wakes it.
+  setInterval(() => {
+    const calm = base === 'idle' && !hovering && !dragging && !dropping
+    if (!calm || sleeping) return
+    if (Date.now() - lastActive > SLEEP_AFTER_MS) {
+      sleeping = true
+      if (idleVariant !== 'idle') idleVariant = 'idle'
+      apply()
+    }
+  }, 5000)
 </script>
 </body>
 </html>

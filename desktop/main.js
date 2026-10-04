@@ -62,19 +62,33 @@ const CLICK_SLOP = 6
 const MAX_CURSOR_STEP = 300
 /** How often the plugin's /state route is checked. */
 const STATE_POLL_MS = 700
-/** Every layer the page mounts. `float` is local: two sprites, one host state. */
-const STATES = ['idle', 'joy', 'thinking', 'done', 'float']
-/** The subset the plugin is allowed to ask for; `float` follows from `done`. */
-const HOST_STATES = ['idle', 'joy', 'thinking', 'done']
+/**
+ * Every sprite layer the page mounts.
+ *
+ * `joy`, `held`, `drop`, `sleep`, `idle-bubble` and `float` are worked out in the
+ * page; the host half only ever asks for `idle`, `thinking`, `waiting` or `done`.
+ */
 const SPRITES = {
   idle: 'Idle.gif',
+  'idle-bubble': 'idle-bubble.gif',
   joy: 'alive.gif',
   thinking: 'thinking.gif',
-  // The transformation plays once, then the looping tick takes over — replaying
-  // the burst every few seconds would look broken while the user is reading.
+  waiting: 'waiting.gif',
+  sleep: 'sleep.gif',
+  held: 'held.gif',
+  drop: 'drop.gif',
   done: 'done.gif',
   float: 'float.gif',
 }
+/** What the plugin is allowed to ask for. */
+const HOST_STATES = ['idle', 'thinking', 'waiting', 'done']
+/** The waiting marks, one per kind of pending interaction. */
+const MARKS = {
+  approval: 'mark-approval.png',
+  question: 'mark-question.png',
+  'plan-review': 'mark-plan.png',
+}
+const STATES = Object.keys(SPRITES)
 /** How long `done.gif` runs before the looping tick takes over. */
 const MORPH_MS = Math.max(100, Number(arg('morphMs', '4400')) || 4400)
 
@@ -106,6 +120,10 @@ let dragTimer = null
 let dragOrigin = null
 /** Previous cursor sample, so movement is applied as a delta. */
 let lastCursor = null
+/** Which way the pet is being carried, so the page can mirror it. */
+let lastFacing = 'left'
+/** Renderer console output, kept only for the self-test. */
+const consoleLines = []
 
 function beginDrag() {
   if (win === undefined || win.isDestroyed()) return
@@ -147,6 +165,16 @@ function followCursor(point) {
   if (Math.abs(dx) > MAX_CURSOR_STEP || Math.abs(dy) > MAX_CURSOR_STEP) return
   const [x, y] = win.getPosition()
   win.setPosition(Math.round(x + dx), Math.round(y + dy))
+
+  // Face the way it is being carried. The base sprite looks left, so travelling
+  // right mirrors it.
+  if (Math.abs(dx) >= 2 && win !== undefined && !win.isDestroyed()) {
+    const facing = dx < 0 ? 'left' : 'right'
+    if (facing !== lastFacing) {
+      lastFacing = facing
+      win.webContents.send('pet:facing', facing)
+    }
+  }
 }
 
 function endDrag() {
@@ -163,7 +191,11 @@ function endDrag() {
   if (origin === null || win === undefined || win.isDestroyed()) return
   // A press that never really moved is a click, not a drag.
   const [x, y] = win.getPosition()
-  if (Math.hypot(x - origin.x, y - origin.y) >= CLICK_SLOP) return
+  if (Math.hypot(x - origin.x, y - origin.y) >= CLICK_SLOP) {
+    // Let go after carrying it: the landing gets its own squash and dust.
+    if (!win.isDestroyed()) win.webContents.send('pet:dropped')
+    return
+  }
   // A visible reaction, always. Opening a chat that is already on screen changes
   // nothing on screen, and a click that appears to do nothing is indistinguishable
   // from a broken one.
@@ -311,13 +343,23 @@ function createWindow() {
   options.y = Math.min(Math.max(options.y, top), Math.max(top, bottom - SIZE))
 
   win = new BrowserWindow(options)
+  if (SELFTEST) {
+    // A page that throws on load leaves every probe failing with "script failed
+    // to execute" and no clue why, so keep what the renderer actually said.
+    win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      consoleLines.push(`[${level}] ${message} (${String(sourceId).split(/[\\/]/).pop()}:${line})`)
+    })
+  }
   // 'screen-saver' is the highest normal level, so the pet stays above other
   // always-on-top windows while still yielding to full-screen apps in practice.
   win.setAlwaysOnTop(true, 'screen-saver')
   win.loadFile(path.join(__dirname, 'pet.html'), {
-    query: STATES.reduce(
-      (query, state) => ({ ...query, [state]: assetUrl(SPRITES[state]) }),
-      { size: String(SIZE), state: 'idle', morphMs: String(MORPH_MS) },
+    query: Object.entries(SPRITES).reduce(
+      (query, [state, file]) => ({ ...query, [state]: assetUrl(file) }),
+      Object.entries(MARKS).reduce(
+        (query, [kind, file]) => ({ ...query, [`mark-${kind}`]: assetUrl(file) }),
+        { size: String(SIZE), state: 'idle', morphMs: String(MORPH_MS) },
+      ),
     ),
   })
 
@@ -350,9 +392,14 @@ async function pollState() {
     const response = await fetch(`${API}/state`)
     const snapshot = await response.json()
     const next = snapshot?.state
-    if (!STATES.includes(next) || next === lastState) return
-    lastState = next
-    if (win !== undefined && !win.isDestroyed()) win.webContents.send('pet:state', next)
+    if (!STATES.includes(next)) return
+    const mark = typeof snapshot?.mark === 'string' ? snapshot.mark : null
+    const key = `${next}|${mark ?? ''}`
+    if (key === lastState) return
+    lastState = key
+    if (win !== undefined && !win.isDestroyed()) {
+      win.webContents.send('pet:state', { state: next, mark })
+    }
   } catch {
     /* the plugin may be reloading; the next tick will pick it up */
   }
@@ -388,6 +435,7 @@ async function selftest() {
     visible: win === undefined ? undefined : win.isVisible(),
     opacity: win === undefined ? undefined : win.getOpacity(),
     alwaysOnTop: win === undefined ? undefined : win.isAlwaysOnTop(),
+    console: consoleLines,
     // Units matter enormously here: setPosition takes DIP, and if these numbers
     // are actually physical pixels the pet docks clean off the screen.
     display: {
@@ -420,6 +468,14 @@ async function selftest() {
         close: typeof window.petWindow?.close,
         onState: typeof window.petWindow?.onState,
         onFlash: typeof window.petWindow?.onFlash,
+        onDropped: typeof window.petWindow?.onDropped,
+        onFacing: typeof window.petWindow?.onFacing,
+      }
+      out.marks = {}
+      for (const kind of ['approval', 'question', 'plan-review']) {
+        const img = document.getElementById('mark-' + kind)
+        out.marks[kind] = { present: img !== null, complete: img?.complete === true,
+                            naturalWidth: img?.naturalWidth ?? 0 }
       }
       out.devicePixelRatio = window.devicePixelRatio
       return out
@@ -438,7 +494,11 @@ async function selftest() {
       // Longer than the .18 s crossfade, so the sampled opacities have settled.
       await new Promise(resolve => setTimeout(resolve, 420))
       payload.states[state] = await win.webContents.executeJavaScript(`(() => {
-        const out = { dataset: document.body.dataset.state, opacity: {} }
+        const out = {
+          dataset: document.body.dataset.state,
+          mark: document.body.dataset.mark,
+          opacity: {},
+        }
         for (const s of ${JSON.stringify(STATES)}) {
           out.opacity[s] = getComputedStyle(document.getElementById(s)).opacity
         }
@@ -458,6 +518,50 @@ async function selftest() {
                  float: getComputedStyle(document.getElementById('float')).opacity },
     }))()`)
     payload.morph = { ms: MORPH_MS, during, after }
+
+    // The local states: dozing, the idle variant, the landing, and the mirror.
+    // These are driven by time and by the gesture, so the test pokes them
+    // directly rather than waiting three minutes for a nap.
+    payload.local = {}
+    await win.webContents.executeJavaScript(`window.__petSetHover(false), window.__petSetState('idle'), true`)
+    await new Promise(resolve => setTimeout(resolve, 260))
+    for (const [name, script] of [
+      ['sleeping', `window.__petTest.setSleeping(true)`],
+      ['idleBubble', `window.__petTest.setSleeping(false), window.__petTest.setIdleVariant('idle-bubble')`],
+      ['dropping', `window.__petTest.setIdleVariant('idle'), window.__petTest.setDropping(true)`],
+      ['mirrored', `window.__petTest.setDropping(false), window.__petTest.setMirrored(true)`],
+    ]) {
+      await win.webContents.executeJavaScript(`${script}, true`)
+      await new Promise(resolve => setTimeout(resolve, 260))
+      payload.local[name] = await win.webContents.executeJavaScript(`(() => ({
+        ...window.__petShown(),
+        mirroredClass: document.body.classList.contains('mirrored'),
+      }))()`)
+    }
+    await win.webContents.executeJavaScript(
+      `window.__petTest.setMirrored(false), window.__petTest.setDropping(false), true`)
+
+    // The waiting mark must follow the kind, and only while waiting. Sent over
+    // the real IPC channel, so the preload bridge and the page handler are
+    // exercised rather than a test-only shortcut.
+    payload.waitingMarks = {}
+    for (const kind of ['approval', 'question', 'plan-review', null]) {
+      if (win !== undefined && !win.isDestroyed()) {
+        win.webContents.send('pet:state', { state: 'waiting', mark: kind })
+      }
+      await new Promise(resolve => setTimeout(resolve, 320))
+      payload.waitingMarks[String(kind)] = await win.webContents.executeJavaScript(`(() => ({
+        dataset: document.body.dataset.state,
+        mark: document.body.dataset.mark,
+        marks: Object.fromEntries(['approval', 'question', 'plan-review'].map(k => [
+          k, getComputedStyle(document.getElementById('mark-' + k)).opacity,
+        ])),
+      }))()`)
+    }
+    if (win !== undefined && !win.isDestroyed()) {
+      win.webContents.send('pet:state', { state: 'idle', mark: null })
+    }
+    await new Promise(resolve => setTimeout(resolve, 260))
   } catch (error) {
     payload.statesError = String(error)
   }

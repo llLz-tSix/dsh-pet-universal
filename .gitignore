@@ -1,4 +1,7 @@
 # Build and test leftovers
+tools/_probe-*.png
+tools/_zoom-*.png
+tools/preview-*.png
 _probe_*.png
 _h1.png
 _h2.png

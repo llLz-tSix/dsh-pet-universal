@@ -45,16 +45,33 @@ const KILL_GRACE_MS = 3000
  */
 const ASSETS = new Map([
   ['Idle.gif', 'image/gif'],
+  ['idle-bubble.gif', 'image/gif'],
   ['alive.gif', 'image/gif'],
   ['thinking.gif', 'image/gif'],
+  ['waiting.gif', 'image/gif'],
+  ['sleep.gif', 'image/gif'],
+  ['held.gif', 'image/gif'],
+  ['drop.gif', 'image/gif'],
   ['done.gif', 'image/gif'],
   ['float.gif', 'image/gif'],
+  ['mark-approval.png', 'image/png'],
+  ['mark-question.png', 'image/png'],
+  ['mark-plan.png', 'image/png'],
 ])
+
+/** The three kinds of "the agent is blocked on you". */
+const PENDING_KINDS = ['approval', 'question', 'plan-review']
 
 /** The floating window process, or null while no pet is on screen. */
 let pet = null
-/** Whether the agent is generating. */
+/** The agent is generating. */
 let running = false
+/** The agent is blocked waiting for the user, and on what. */
+let pending = null
+/** The harness's own "finished, not looked at yet" flag. */
+let unread = false
+/** Our own latch, for the case where `unread` never becomes true. */
+let finished = false
 /** What the pet shows when the pointer is not on it. */
 let state = 'idle'
 /** Set by the click of the floating pet, collected by the browser half. */
@@ -192,19 +209,40 @@ function stopPet() {
 }
 
 /**
- * Mirror the current state into the child.
+ * Decide what the pet should show.
  *
- * There is nothing to push: the child polls `GET /state` itself, because a piped
- * stdin does not work in an Electron main process.
+ * Waiting outranks everything, matching the harness's own sidebar: when the
+ * agent is blocked on a permission prompt or a question, that is the one thing
+ * the pet must not hide behind a calm animation.
+ *
+ * Finishing is taken from the harness's `completionUnread` when it fires — that
+ * is the app's own "done, not looked at" flag, and it clears exactly when the
+ * user opens the session. It does not always fire (a turn that ends while the
+ * user is watching the conversation is not unread), so a local latch covers that
+ * case and is released by the click on the pet or by `/ack`.
  */
-function setRunning(next) {
-  if (next === running) return
-  running = next
-  // Work starting always wins. Work ending parks the pet on the tick, and there
-  // it stays until the user acknowledges it. An earlier version returned to rest
-  // after a fixed four seconds, which hid the only sign that a turn had finished
-  // — often while the user was still reading the answer.
-  state = running ? 'thinking' : 'done'
+function recompute() {
+  if (pending !== null) state = 'waiting'
+  else if (running) state = 'thinking'
+  else if (unread || finished) state = 'done'
+  else state = 'idle'
+}
+
+/** Apply a status report from the browser half. */
+function report(next) {
+  const wasRunning = running
+  running = next.running === true
+
+  const kind = next.pending
+  pending = typeof kind === 'string' && PENDING_KINDS.includes(kind) ? kind : null
+
+  const nextUnread = next.unread === true
+  if (running && !wasRunning) finished = false            // new work wins over anything
+  if (wasRunning && !running) finished = true             // a turn just ended
+  if (unread && !nextUnread) finished = false             // the harness says: looked at
+  unread = nextUnread
+
+  recompute()
 }
 
 /**
@@ -214,8 +252,9 @@ function setRunning(next) {
  * browser half reports that the user opened a conversation on their own.
  */
 function acknowledge() {
-  if (state !== 'done') return false
-  state = 'idle'
+  if (!finished) return false
+  finished = false
+  recompute()
   return true
 }
 
@@ -235,13 +274,15 @@ async function serve(req, res) {
     if (method !== 'POST') return fail(res, 405, 'POST')
     const body = await readJson(req).catch(() => undefined)
     // A request that never parses must not be mistaken for "work finished".
-    if (body !== undefined) setRunning(body.running === true)
-    return json(res, 200, { ok: true, running, state })
+    if (body !== undefined) report(body)
+    return json(res, 200, { ok: true, running, state, mark: pending, unread })
   }
 
   if (route === '/state') {
     if (method !== 'GET' && method !== 'HEAD') return fail(res, 405, 'GET, HEAD')
-    return json(res, 200, { alive: pet !== null, running, state })
+    // `mark` carries which kind of waiting it is, so the window can pick the
+    // right glyph without a second round trip.
+    return json(res, 200, { alive: pet !== null, running, state, mark: pending, unread })
   }
 
   // Polled by the browser half. Reading the flag clears it, so one click opens

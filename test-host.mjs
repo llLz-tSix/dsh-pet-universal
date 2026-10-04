@@ -74,25 +74,61 @@ check('state starts with no pet alive',
   idle.status === 200 && json(idle)?.alive === false, `${idle.status} ${idle.body}`)
 check('state starts idle', json(idle)?.state === 'idle', String(idle.body))
 check('state starts not running', json(idle)?.running === false, String(idle.body))
+check('state starts with no waiting mark', json(idle)?.mark === null, String(idle.body))
 
-const busy = await call('POST', '/api/dsh-pet/status', { running: true })
+const busy = await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
 check('work starting shows the thinking sprite',
   busy.status === 200 && json(busy)?.state === 'thinking', `${busy.status} ${busy.body}`)
 check('the running flag is reported back', json(busy)?.running === true, String(busy.body))
 
-const stillBusy = await call('POST', '/api/dsh-pet/status', { running: true })
+const stillBusy = await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
 check('a repeated busy report keeps thinking', json(stillBusy)?.state === 'thinking', String(stillBusy.body))
 
-const finished = await call('POST', '/api/dsh-pet/status', { running: false })
-check('work finishing shows the tick', json(finished)?.state === 'done', String(finished.body))
+// Waiting outranks working: the agent is blocked on the user, and that is the
+// one thing the pet must never hide behind a calm animation.
+const asking = await call('POST', '/api/dsh-pet/status',
+  { running: true, pending: 'approval', unread: false })
+check('a permission prompt outranks thinking',
+  json(asking)?.state === 'waiting', String(asking.body))
+check('the mark says which kind of waiting it is',
+  json(asking)?.mark === 'approval', String(asking.body))
+
+const questioned = await call('POST', '/api/dsh-pet/status',
+  { running: true, pending: 'question', unread: false })
+check('another kind of waiting carries its own mark',
+  json(questioned)?.state === 'waiting' && json(questioned)?.mark === 'question',
+  String(questioned.body))
+
+const nonsense = await call('POST', '/api/dsh-pet/status',
+  { running: true, pending: 'something-else', unread: false })
+check('an unknown kind is ignored rather than shown',
+  json(nonsense)?.state === 'thinking' && json(nonsense)?.mark === null, String(nonsense.body))
+
+// Finishing, the harness's own way: `completionUnread` is the app saying "done,
+// and you have not looked at it", and it clears when the session is opened.
+const unread = await call('POST', '/api/dsh-pet/status',
+  { running: false, pending: null, unread: true })
+check('an unread finished turn shows the tick', json(unread)?.state === 'done', String(unread.body))
+
+const looked = await call('POST', '/api/dsh-pet/status',
+  { running: false, pending: null, unread: false })
+check('once the user has looked, the tick goes away',
+  json(looked)?.state === 'idle', String(looked.body))
+
+// ...and the local latch covers the common case where it never fires: a turn
+// that ends while the user is already watching the conversation is not unread.
+await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
+const viaLatch = await call('POST', '/api/dsh-pet/status',
+  { running: false, pending: null, unread: false })
+check('a turn that simply ended still shows the tick',
+  json(viaLatch)?.state === 'done', String(viaLatch.body))
 
 // The whole point of the tick is that it waits. An earlier version returned to
 // rest after a fixed few seconds, which hid the only sign that a turn had ended
 // — usually while the answer was still being read.
 await new Promise(resolve => setTimeout(resolve, 200))
-const lingering = await call('GET', '/api/dsh-pet/state')
 check('the tick waits for the user instead of timing out',
-  json(lingering)?.state === 'done', String(lingering.body))
+  json(await call('GET', '/api/dsh-pet/state'))?.state === 'done', '')
 
 const junk = await call('POST', '/api/dsh-pet/status', { running: 'yes' })
 check('a non-boolean report leaves the tick alone', json(junk)?.state === 'done', String(junk.body))
@@ -113,8 +149,8 @@ check('nothing is pending before the pet is clicked', json(noClick)?.openChat ==
 // is what makes the click visibly do something even when the chat it opens is
 // the one already on screen — the usual case, since the pet sits next to the
 // answer being read.
-await call('POST', '/api/dsh-pet/status', { running: true })
-await call('POST', '/api/dsh-pet/status', { running: false })
+await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
+await call('POST', '/api/dsh-pet/status', { running: false, pending: null, unread: false })
 const click = await call('POST', '/api/dsh-pet/open-chat')
 check('a click on the pet clears the tick too', json(click)?.cleared === true, String(click.body))
 
@@ -128,12 +164,12 @@ check('the pet is resting after the click',
   json(await call('GET', '/api/dsh-pet/state'))?.state === 'idle', '')
 
 // New work overrides the tick, so a finished turn never blocks the next one.
-await call('POST', '/api/dsh-pet/status', { running: true })
-await call('POST', '/api/dsh-pet/status', { running: false })
-await call('POST', '/api/dsh-pet/status', { running: true })
+await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
+await call('POST', '/api/dsh-pet/status', { running: false, pending: null, unread: false })
+await call('POST', '/api/dsh-pet/status', { running: true, pending: null, unread: false })
 check('new work replaces the tick with thinking',
   json(await call('GET', '/api/dsh-pet/state'))?.state === 'thinking', '')
-await call('POST', '/api/dsh-pet/status', { running: false })
+await call('POST', '/api/dsh-pet/status', { running: false, pending: null, unread: false })
 await call('POST', '/api/dsh-pet/ack')
 
 // ── method guards ─────────────────────────────────────────────────────────────

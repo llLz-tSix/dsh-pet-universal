@@ -1,15 +1,37 @@
 # tools/
 
 Development and verification helpers. None of this is needed to *use* the pet —
-it is here because the interesting bugs in this plugin were all invisible ones,
-and these scripts are what made them visible.
+it is here because every interesting bug in this plugin was an invisible one, and
+these scripts are what made them visible.
 
 | Script | What it does |
 |---|---|
-| `whale_states.py` | Generates `thinking.gif`, `done.gif` and `float.gif` from a base whale sprite, in the same frame and palette as the shipped animations. |
-| `probe_states.mjs` | Runs the desktop app against a stand-in `/state` server and photographs the screen after each state, so the whole chain — route, poll, IPC, layer switch — can be checked without reloading the running harness. |
+| `petart.py` | Shared helpers: sprite loading, eye surgery, bubbles, sparks, dust, palette encoding. |
+| `whale_art.py` | Builds every animation and waiting mark from the base whale sprite. |
+| `probe_states.mjs` | Runs the desktop app against a stand-in `/state` server and photographs the screen after each state, so the whole chain — route, poll, IPC, layer switch, waiting mark — can be checked without reloading the running harness. |
 | `check-window.ps1` | Minimises the harness, clicks the pet, and reports which window ends up in front. Verifies the click and the window-raising in one pass. |
 | `find-pet.py` | Locates the sprite inside a screenshot. Used by `check-window.ps1`; confines the search to a region, because the whale's blue occurs in ordinary applications too. |
+
+## Building the art
+
+```powershell
+python tools\whale_art.py whale_pixel.png whale_pixel_fountain.png
+```
+
+The first sprite is the whale with open eyes; the second adds the water jet used
+by the joy animation. Both are optional arguments — without them the script looks
+for those names next to itself.
+
+Everything is authored on a native 80×80 grid, pasted onto a 120×120 canvas at a
+fixed offset, and upscaled ×4 with NEAREST. That framing is the whole point of
+having one script: a state built at a different size or offset makes the pet jump
+the moment the plugin switches layers, and `test-desktop.mjs` asserts that all ten
+sprites come out the same size.
+
+Faces are painted on, not drawn from scratch: the source is a single flat PNG, so
+`Whale.face()` floods the eye regions, fills them with the surrounding skin colour
+and draws a new arc. That is how the sleeping and contented expressions exist at
+all.
 
 ## Two things that will waste your afternoon
 
@@ -25,13 +47,8 @@ goes to virtualised ones, and the click lands next to the pet. Both
 
 ## Requirements
 
-- Python with Pillow and numpy (for `whale_states.py` and `find-pet.py`).
+- Python with Pillow and numpy.
 - A plain Electron runtime for `probe_states.mjs` — by default it looks in
   `<home>/.dsh/electron/`; override with `DSH_ELECTRON`.
-- PowerShell on Windows for `check-window.ps1`.
-
-```powershell
-python tools\whale_states.py path\to\base_sprite.png
-node tools\probe_states.mjs
-powershell -ExecutionPolicy Bypass -File tools\check-window.ps1
-```
+- PowerShell on Windows for `check-window.ps1`; override the interpreter with
+  `DSH_POWERSHELL` and the Python with `DSH_PYTHON` if yours live elsewhere.

@@ -78,6 +78,40 @@ window.__ModuleLoader__.load({
       return newest
     }
 
+    /**
+     * The kind of interaction the agent is blocked on, if any.
+     *
+     * `pendingInteraction` arrives either as a bare kind string or as an object
+     * carrying `kind`, depending on which UI published it, so both shapes are
+     * accepted rather than betting on one.
+     */
+    const selectPending = snapshot => {
+      if (snapshot === undefined || snapshot === null) return null
+      if (typeof snapshot.values !== 'function') return null
+      for (const status of snapshot.values()) {
+        const interaction = status?.pendingInteraction
+        if (interaction === undefined || interaction === null) continue
+        const kind = typeof interaction === 'string' ? interaction : interaction.kind
+        if (typeof kind === 'string' && kind !== '') return kind
+      }
+      return null
+    }
+
+    /**
+     * Whether the harness considers a finished turn unlooked-at.
+     *
+     * This is the app's own notion of "done, and you have not seen it": it clears
+     * when the session is opened, which is exactly when the tick should go away.
+     */
+    const selectUnread = snapshot => {
+      if (snapshot === undefined || snapshot === null) return false
+      if (typeof snapshot.values !== 'function') return false
+      for (const status of snapshot.values()) {
+        if (status !== undefined && status !== null && status.completionUnread === true) return true
+      }
+      return false
+    }
+
     /** Stable no-op used when ui-session is absent, so the hook call stays unconditional. */
     const useNoStatus = () => false
 
@@ -143,6 +177,8 @@ window.__ModuleLoader__.load({
       return function PetBridge(props) {
         const { useSessionStatus = useNoStatus, useSessions, usePanelInfo } = props
         const running = useSessionStatus(selectAnyRunning)
+        const pending = useSessionStatus(selectPending)
+        const unread = useSessionStatus(selectUnread)
         const target = useSessions === undefined ? undefined : useSessions(pickSession)
 
         // The poll callback outlives any single render, so the target is read
@@ -179,14 +215,17 @@ window.__ModuleLoader__.load({
 
         const last = useRef(undefined)
         useEffect(() => {
-          if (last.current === running) return
-          last.current = running
+          // One report for all three signals: they describe a single situation,
+          // and sending them separately would let the pet see torn states.
+          const key = `${running}|${pending ?? ''}|${unread}`
+          if (last.current === key) return
+          last.current = key
           fetch(`${API}/status`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ running }),
+            body: JSON.stringify({ running, pending, unread }),
           }).catch(() => { /* the host half is absent or going away */ })
-        }, [running])
+        }, [running, pending, unread])
 
         useEffect(() => {
           const id = setInterval(() => {

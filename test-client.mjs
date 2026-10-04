@@ -142,14 +142,28 @@ check('register options carry name + order', registered?.options?.name === 'shel
 const emptySessions = { byId: {} }
 
 /**
+ * A session-status snapshot with one session in it.
+ *
+ * The stub feeds the REAL selectors rather than returning canned values, so the
+ * three signals the pet watches — generating, blocked on the user, and finished
+ * but unlooked-at — are exercised the way the shell would exercise them.
+ */
+const makeSnapshot = ({ running, pending, unread }) => new Map([['s1', {
+  running,
+  pendingInteraction: pending === null ? undefined : { kind: pending },
+  completionUnread: unread,
+}]])
+
+/**
  * Render one pass. Each scenario starts by tearing the previous tree down, so a
  * leftover poll interval cannot make one click open the chat several times.
  */
-const render = ({ running = false, sessions, fresh = true } = {}) => {
+const render = ({ running = false, pending = null, unread = false, sessions, fresh = true } = {}) => {
   if (fresh) hooks.teardown()
   hooks.begin()
+  const snapshot = makeSnapshot({ running, pending, unread })
   return registered.component({
-    useSessionStatus: () => running,
+    useSessionStatus: selector => selector(snapshot),
     useSessions: selector => selector(sessions === undefined ? emptySessions : sessions),
   })
 }
@@ -157,7 +171,8 @@ const render = ({ running = false, sessions, fresh = true } = {}) => {
 check('the browser half draws no sprite of its own', render() === null)
 
 const statusCalls = () => fetchCalls.filter(call => call.url.endsWith('/status'))
-const bodies = () => statusCalls().map(call => JSON.parse(call.init.body).running)
+const reports = () => statusCalls().map(call => JSON.parse(call.init.body))
+const bodies = () => reports().map(report => report.running)
 
 fetchCalls.length = 0
 render({ running: false })
@@ -165,6 +180,9 @@ check('the idle status is reported on mount', statusCalls().length === 1, JSON.s
 check('the report says the agent is idle', bodies()[0] === false, JSON.stringify(bodies()))
 check('the report is a POST to the status route',
   statusCalls()[0]?.init?.method === 'POST', String(statusCalls()[0]?.init?.method))
+check('the report carries all three signals',
+  reports()[0].pending === null && reports()[0].unread === false,
+  JSON.stringify(reports()[0]))
 
 fetchCalls.length = 0
 render({ running: true, fresh: false })
@@ -174,6 +192,30 @@ fetchCalls.length = 0
 render({ running: true, fresh: false })
 check('an unchanged status is not reported again', statusCalls().length === 0, JSON.stringify(bodies()))
 
+// Waiting is its own signal even while the agent is still generating: it is
+// blocked, and the pet has to say so.
+fetchCalls.length = 0
+render({ running: true, pending: 'approval', fresh: false })
+check('being blocked on the user is reported', reports().at(-1)?.pending === 'approval',
+  JSON.stringify(reports()))
+
+fetchCalls.length = 0
+render({ running: true, pending: null, fresh: false })
+check('the agent carrying on is reported', reports().at(-1)?.pending === null,
+  JSON.stringify(reports()))
+
+fetchCalls.length = 0
+render({ running: false, unread: true, fresh: false })
+check('a finished, unlooked-at turn is reported', reports().at(-1)?.unread === true,
+  JSON.stringify(reports()))
+
+fetchCalls.length = 0
+render({ running: false, unread: false, fresh: false })
+check('looking at it is reported too', reports().at(-1)?.unread === false,
+  JSON.stringify(reports()))
+
+fetchCalls.length = 0
+render({ running: true, fresh: false })
 fetchCalls.length = 0
 render({ running: false, fresh: false })
 check('returning to idle is reported', bodies().includes(false), JSON.stringify(bodies()))
@@ -265,18 +307,42 @@ check('a click with no session list anywhere still reveals the conversation',
   opened.length === 0 && panels.length === 1, JSON.stringify(panels))
 
 // ── the selectors, through the component ─────────────────────────────────────
-let capturedStatus
+// The component subscribes three times over the same snapshot — generating,
+// blocked, unlooked-at — so all three selectors are captured, in order.
+const capturedSelectors = []
 let capturedSessions
 render()
 registered.component({
-  useSessionStatus: selector => { capturedStatus = selector; return false },
+  useSessionStatus: selector => { capturedSelectors.push(selector); return undefined },
   useSessions: selector => { capturedSessions = selector; return undefined },
 })
-check('status selector: empty map is idle', capturedStatus(new Map()) === false)
-check('status selector: a running session is busy', capturedStatus(new Map([['s1', { running: true }]])) === true)
-check('status selector: an idle session is not busy', capturedStatus(new Map([['s1', { running: false }]])) === false)
-check('status selector: a bare undefined snapshot is not busy', capturedStatus(undefined) === false)
-check('status selector: a null snapshot does not throw', capturedStatus(null) === false)
+const [busySelector, pendingSelector, unreadSelector] = capturedSelectors
+check('the component watches exactly three signals', capturedSelectors.length === 3,
+  String(capturedSelectors.length))
+
+check('busy selector: empty map is idle', busySelector(new Map()) === false)
+check('busy selector: a running session is busy', busySelector(new Map([['s1', { running: true }]])) === true)
+check('busy selector: an idle session is not busy', busySelector(new Map([['s1', { running: false }]])) === false)
+check('busy selector: a bare undefined snapshot is not busy', busySelector(undefined) === false)
+check('busy selector: a null snapshot does not throw', busySelector(null) === false)
+
+// The interaction arrives either as a bare kind string or as an object with
+// `kind`, depending on which UI published it, so both shapes must work.
+check('pending selector: nothing pending is null', pendingSelector(new Map()) === null)
+check('pending selector: an object form is unwrapped',
+  pendingSelector(new Map([['s1', { pendingInteraction: { kind: 'approval' } }]])) === 'approval')
+check('pending selector: a bare string form is accepted',
+  pendingSelector(new Map([['s1', { pendingInteraction: 'question' }]])) === 'question')
+check('pending selector: an interaction without a kind is ignored',
+  pendingSelector(new Map([['s1', { pendingInteraction: {} }]])) === null)
+check('pending selector: a null snapshot does not throw', pendingSelector(null) === null)
+
+check('unread selector: nothing unread is false', unreadSelector(new Map()) === false)
+check('unread selector: an unlooked-at turn is true',
+  unreadSelector(new Map([['s1', { completionUnread: true }]])) === true)
+check('unread selector: a looked-at turn is false',
+  unreadSelector(new Map([['s1', { completionUnread: false }]])) === false)
+check('unread selector: a null snapshot does not throw', unreadSelector(null) === false)
 
 check('session selector: an empty list has no target', capturedSessions({ byId: {} }) === undefined)
 check('session selector: a missing map does not throw', capturedSessions(undefined) === undefined)

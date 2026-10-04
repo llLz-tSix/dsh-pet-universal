@@ -100,8 +100,10 @@ check('the sprite file behind that URL exists',
 // that opens with a blocked script and no sprites looks exactly like a window
 // that never opened, so these are the checks that actually matter.
 const images = report?.images
-const STATES = ['idle', 'joy', 'thinking', 'done', 'float']
-const HOST_STATES = ['idle', 'joy', 'thinking', 'done']
+const STATES = ['idle', 'idle-bubble', 'joy', 'thinking', 'waiting',
+                'sleep', 'held', 'drop', 'done', 'float']
+const HOST_STATES = ['idle', 'thinking', 'waiting', 'done']
+const MARKS = ['approval', 'question', 'plan-review']
 check('the page script ran (a too-strict CSP kills it silently)',
   images?.body === '96x96', String(images?.body))
 
@@ -110,6 +112,18 @@ for (const state of STATES) {
     images?.[state]?.complete === true && images[state].naturalWidth > 0,
     JSON.stringify(images?.[state]))
 }
+for (const kind of MARKS) {
+  check(`the ${kind} mark is mounted and decoded`,
+    images?.marks?.[kind]?.present === true
+      && images.marks[kind].complete === true
+      && images.marks[kind].naturalWidth > 0,
+    JSON.stringify(images?.marks?.[kind]))
+}
+// Every state shares one frame. A sprite built at a different size would make
+// the pet jump the moment the plugin switches layers.
+check('every sprite is the same size, so nothing jumps between states',
+  new Set(STATES.map(s => images?.[s]?.naturalWidth)).size === 1,
+  [...new Set(STATES.map(s => images?.[s]?.naturalWidth))].join(','))
 
 /**
  * Opacity is sampled mid-crossfade often enough that exact string comparison is
@@ -118,21 +132,24 @@ for (const state of STATES) {
 const shown = value => Number(value) > 0.95
 const hidden = value => Number(value) < 0.05
 
-check('the resting state is the one shown at rest',
-  shown(images?.idle?.opacity)
-    && STATES.filter(s => s !== 'idle').every(s => hidden(images?.[s]?.opacity)),
+// Resting alternates between the plain loop and the bubble variant at random, so
+// either is correct — both are the pet being idle.
+const RESTING = ['idle', 'idle-bubble']
+
+const restingVisible = STATES.filter(s => shown(images?.[s]?.opacity))
+check('at rest exactly one idle layer is showing',
+  restingVisible.length === 1 && RESTING.includes(restingVisible[0]),
   STATES.map(s => `${s}=${images?.[s]?.opacity}`).join(' '))
 
 // Every state must switch to its own layer. A specificity mistake here leaves
 // layers stacked or blank while the DOM still looks perfectly correct.
 for (const state of HOST_STATES) {
   const shot = report?.states?.[state]
-  const others = STATES.filter(s => s !== state)
+  const allowed = state === 'idle' ? RESTING : [state]
+  const visible = STATES.filter(s => shown(shot?.opacity?.[s]))
   check(`switching to ${state} shows only that layer`,
-    shot?.dataset === state
-      && shown(shot?.opacity?.[state])
-      && others.every(s => hidden(shot?.opacity?.[s])),
-    `${shot?.dataset} ${JSON.stringify(shot?.opacity)}`)
+    allowed.includes(shot?.dataset) && visible.length === 1 && allowed.includes(visible[0]),
+    `${shot?.dataset} visible=${JSON.stringify(visible)}`)
 }
 
 // The tick waits for the user, so the transformation must play once and hand
@@ -146,6 +163,32 @@ check('the tick hands over to the levitation loop',
     && shown(morph?.after?.opacity?.float)
     && hidden(morph?.after?.opacity?.done),
   JSON.stringify(morph?.after))
+
+// The waiting mark. Each kind of blocked interaction gets its own glyph, and
+// only one is ever up — a pet that shows "!" and "?" together says nothing.
+for (const kind of [...MARKS, null]) {
+  const shot = report?.waitingMarks?.[String(kind)]
+  const wanted = kind === null ? '' : kind
+  const visible = MARKS.filter(k => Number(shot?.marks?.[k]) > 0.2)
+  check(`waiting on ${kind ?? 'nothing'} shows ${kind === null ? 'no mark' : 'its own mark'}`,
+    shot?.dataset === 'waiting'
+      && shot?.mark === wanted
+      && (kind === null ? visible.length === 0 : visible.length === 1 && visible[0] === kind),
+    `mark=${JSON.stringify(shot?.mark)} visible=${JSON.stringify(visible)}`)
+}
+
+// The local states the page works out on its own: dozing, the idle variant, the
+// landing, and facing the way it is carried.
+const local = report?.local
+check('a long quiet idle dozes off', local?.sleeping?.layer === 'sleep',
+  JSON.stringify(local?.sleeping))
+check('the idle variant is its own layer', local?.idleBubble?.layer === 'idle-bubble',
+  JSON.stringify(local?.idleBubble))
+check('letting go plays the landing', local?.dropping?.layer === 'drop',
+  JSON.stringify(local?.dropping))
+check('being carried sideways mirrors the sprite',
+  local?.mirrored?.mirroredClass === true && local?.mirrored?.mirrored === true,
+  JSON.stringify(local?.mirrored))
 
 check('the window really painted pixels',
   (report?.capturedBytes ?? 0) > 800, `${report?.capturedBytes} bytes of PNG`)
@@ -168,7 +211,9 @@ check('the preload bridge exposes every verb',
     && report?.images?.bridge?.dragEnd === 'function'
     && report?.images?.bridge?.close === 'function'
     && report?.images?.bridge?.onState === 'function'
-    && report?.images?.bridge?.onFlash === 'function',
+    && report?.images?.bridge?.onFlash === 'function'
+    && report?.images?.bridge?.onDropped === 'function'
+    && report?.images?.bridge?.onFacing === 'function',
   JSON.stringify(report?.images?.bridge))
 check('the pet docks to the corner when given no drop point',
   report?.bounds?.x > 0 && report?.bounds?.y > 0, JSON.stringify(report?.bounds))
@@ -209,10 +254,18 @@ check('a docked pet sits in the bottom-right corner',
   `right gap ${Math.round(screenWidth - ((dockReport?.bounds?.x ?? 0) + (dockReport?.bounds?.width ?? 0)))},`
   + ` bottom gap ${Math.round(screenHeight - ((dockReport?.bounds?.y ?? 0) + (dockReport?.bounds?.height ?? 0)))}`)
 
-for (const file of ['Idle.gif', 'alive.gif', 'thinking.gif', 'done.gif', 'float.gif']) {
+for (const file of ['Idle.gif', 'idle-bubble.gif', 'alive.gif', 'thinking.gif',
+                    'waiting.gif', 'sleep.gif', 'held.gif', 'drop.gif',
+                    'done.gif', 'float.gif']) {
   const path = join(ASSET_DIR, file)
-  check(`${file} is present and substantial`, statSync(path).size > 1000,
+  check(`${file} is present and substantial`, statSync(path).size > 5000,
     `${statSync(path).size} bytes`)
+}
+
+// The marks are a handful of pixels on purpose, so they get their own floor.
+for (const file of ['mark-approval.png', 'mark-question.png', 'mark-plan.png']) {
+  const path = join(ASSET_DIR, file)
+  check(`${file} is present`, statSync(path).size > 50, `${statSync(path).size} bytes`)
 }
 
 rmSync(RESULT, { force: true })

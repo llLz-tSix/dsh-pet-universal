@@ -2,8 +2,10 @@
  * Drive the floating pet the way the plugin's host half does, and photograph it.
  *
  * The host starts the app and serves `GET /state`; the app polls it. This stands
- * in for the host so the whole chain — state route, poll, IPC, layer switch —
- * can be checked without reloading the running DSH.
+ * in for the host so every state — route, poll, IPC, layer switch, waiting mark —
+ * can be checked without reloading the running harness.
+ *
+ * Writes _probe-<state>.png next to this file and prints where the pet landed.
  */
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
@@ -17,18 +19,26 @@ const ELECTRON = process.env.DSH_ELECTRON ??
   join(homedir(), '.dsh', 'electron', process.platform === 'win32' ? 'electron.exe' : 'electron')
 const APP = join(ROOT, 'desktop')
 const ASSETS = join(ROOT, 'assets')
-const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-const PORT = 19399
-const X = 500
-const Y = 400
+const POWERSHELL = process.env.DSH_POWERSHELL ??
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 19399)
+const X = Number(process.env.DSH_PROBE_X ?? 500)
+const Y = Number(process.env.DSH_PROBE_Y ?? 400)
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-let current = 'idle'
+/** What the stand-in host is currently reporting. */
+let current = { state: 'idle', mark: null }
 
 const server = createServer((req, res) => {
   if (req.url?.startsWith('/api/dsh-pet/state')) {
-    const body = Buffer.from(JSON.stringify({ alive: true, running: current === 'thinking', state: current }))
+    const body = Buffer.from(JSON.stringify({
+      alive: true,
+      running: current.state === 'thinking',
+      state: current.state,
+      mark: current.mark,
+      unread: current.state === 'done',
+    }))
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(body.length) })
     res.end(body)
     return
@@ -39,7 +49,7 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(PORT, '127.0.0.1', resolve))
 
 function grab(name) {
-  const path = join(HERE, `_probe_${name}.png`)
+  const path = join(HERE, `_probe-${name}.png`)
   const script = [
     'Add-Type -AssemblyName System.Drawing',
     'Add-Type -AssemblyName System.Windows.Forms',
@@ -69,14 +79,24 @@ const pet = spawn(ELECTRON, [
 console.log('pet pid', pet.pid)
 
 await sleep(5000)
-await grab('idle')
 
-for (const state of ['thinking', 'done', 'joy']) {
-  current = state
-  console.log('state ->', state)
-  // `done` is a one-shot 4.3 s sequence; catch it while the tick is up.
-  await sleep(state === 'done' ? 2600 : 1600)
-  await grab(state)
+// `done` is a one-shot 4.3 s transformation, so it is photographed while the
+// sparks are still up, and again once the tick has settled into levitation.
+const STEPS = [
+  { name: 'idle', state: 'idle', mark: null, wait: 1500 },
+  { name: 'thinking', state: 'thinking', mark: null, wait: 1500 },
+  { name: 'waiting-approval', state: 'waiting', mark: 'approval', wait: 1500 },
+  { name: 'waiting-question', state: 'waiting', mark: 'question', wait: 1500 },
+  { name: 'waiting-plan', state: 'waiting', mark: 'plan-review', wait: 1500 },
+  { name: 'done', state: 'done', mark: null, wait: 2200 },
+  { name: 'float', state: 'done', mark: null, wait: 4000 },
+]
+
+for (const step of STEPS) {
+  current = { state: step.state, mark: step.mark }
+  console.log('state ->', step.name)
+  await sleep(step.wait)
+  await grab(step.name)
 }
 
 pet.kill()
