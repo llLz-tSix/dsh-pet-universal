@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<!--
+  Same shape of policy as the pet's own page: the menu is styled inline and runs
+  its own inline script, so both have to be allowed explicitly. `default-src
+  'none'` on its own would block the script, and the menu would open as an empty
+  rectangle — the failure mode that cost the longest to find in pet.html.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>dsh-pet: style</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    font: 13px/1 system-ui, "Segoe UI", sans-serif;
+    color: #e8ecf7;
+    cursor: default;
+  }
+
+  /* An inner margin, so the panel's rounded corners are not clipped by the
+     window edge and the drop shadow has room to fall. */
+  #panel {
+    position: absolute;
+    inset: 6px;
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    box-sizing: border-box;
+    border-radius: 10px;
+    background: #1b2135;
+    border: 1px solid #38405c;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .55);
+  }
+
+  #title {
+    padding: 3px 8px 6px;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #8c97b8;
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .item:hover { background: #2a3350; }
+  .item .tick {
+    width: 12px;
+    color: #ffc840;
+    font-size: 12px;
+  }
+  .item .name { flex: 1; }
+  .item .hint { font-size: 10px; color: #8c97b8; }
+
+  #separator {
+    height: 1px;
+    margin: 5px 8px;
+    background: #38405c;
+  }
+
+  #exit { color: #ff9a9a; }
+  #exit:hover { background: #3a2436; }
+</style>
+</head>
+<body>
+  <div id="panel">
+    <div id="title">Стиль</div>
+    <div id="items"></div>
+    <div id="separator"></div>
+    <div class="item" id="exit"><span class="tick"></span><span class="name">Выход</span></div>
+  </div>
+
+<script>
+  const params = new URLSearchParams(location.search)
+  const active = params.get('look') ?? 'main'
+  const looks = (params.get('looks') ?? 'main').split(',').filter(Boolean)
+
+  /** Human labels. An unknown look still gets a row, named after itself. */
+  const LABELS = { main: 'Обычный', crazy: 'Бешеный' }
+  const NOTES = { main: 'main', crazy: 'crazy' }
+
+  const items = document.getElementById('items')
+  for (const look of looks) {
+    const row = document.createElement('div')
+    row.className = 'item'
+    row.dataset.look = look
+
+    const tick = document.createElement('span')
+    tick.className = 'tick'
+    tick.textContent = look === active ? '✓' : ''
+
+    const name = document.createElement('span')
+    name.className = 'name'
+    name.textContent = LABELS[look] ?? look
+
+    const hint = document.createElement('span')
+    hint.className = 'hint'
+    hint.textContent = NOTES[look] ?? ''
+
+    row.append(tick, name, hint)
+    row.addEventListener('click', () => {
+      // Choosing always dismisses, even when the same look is already active:
+      // a menu that stays open after a click reads as broken.
+      window.petWindow.chooseLook(look)
+      window.petWindow.dismiss()
+    })
+    items.append(row)
+  }
+
+  document.getElementById('exit').addEventListener('click', () => window.petWindow.exit())
+  addEventListener('keydown', event => { if (event.key === 'Escape') window.petWindow.dismiss() })
+  // The main process closes the menu when it loses focus, so a click that lands
+  // outside never leaves it orphaned on screen.
+</script>
+</body>
+</html>

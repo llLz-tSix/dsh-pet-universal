@@ -7,7 +7,7 @@
  * auto-start is switched off here — nothing should pop up over the screen while
  * this runs.
  */
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,13 @@ import { fileURLToPath } from 'node:url'
 import { apply, name } from './index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+
+/** Every file a look has to contain, taken from the plugin's own allow-list. */
+const ALL_ASSETS = [
+  'Idle.gif', 'idle-bubble.gif', 'alive.gif', 'thinking.gif', 'waiting.gif',
+  'sleep.gif', 'held.gif', 'drop.gif', 'done.gif', 'float.gif',
+  'mark-approval.png', 'mark-question.png', 'mark-plan.png',
+]
 
 let failures = 0
 const check = (label, ok, detail = '') => {
@@ -204,25 +211,56 @@ const hide = await call('POST', '/api/dsh-pet/hide')
 check('hide succeeds and is idempotent', hide.status === 200 && json(hide)?.ok === true,
   `${hide.status} ${hide.body}`)
 
-// ── the four real sprites ─────────────────────────────────────────────────────
-for (const file of ['Idle.gif', 'alive.gif', 'thinking.gif', 'done.gif', 'float.gif']) {
-  const response = await call('GET', `/api/dsh-pet/assets/${file}`)
-  const size = statSync(join(HERE, 'assets', file)).size
-  check(`${file}: 200 with an image/gif type`,
-    response.status === 200 && response.headers?.['content-type'] === 'image/gif',
-    `${response.status} ${response.headers?.['content-type']}`)
-  check(`${file}: served whole (${size} bytes)`,
-    response.headers?.['content-length'] === String(size) && response.body?.length === size,
-    `header=${response.headers?.['content-length']} body=${response.body?.length}`)
-  check(`${file}: carries the GIF magic`,
-    response.body?.subarray(0, 3).toString('latin1') === 'GIF', String(response.body?.subarray(0, 3)))
+// ── the real sprites, in every look ───────────────────────────────────────────
+const LOOKS = ['main', 'crazy']
+for (const look of LOOKS) {
+  for (const file of ['Idle.gif', 'alive.gif', 'thinking.gif', 'done.gif', 'float.gif']) {
+    const response = await call('GET', `/api/dsh-pet/assets/${look}/${file}`)
+    const size = statSync(join(HERE, 'assets', look, file)).size
+    check(`${look}/${file}: 200 with an image/gif type`,
+      response.status === 200 && response.headers?.['content-type'] === 'image/gif',
+      `${response.status} ${response.headers?.['content-type']}`)
+    check(`${look}/${file}: served whole (${size} bytes)`,
+      response.headers?.['content-length'] === String(size) && response.body?.length === size,
+      `header=${response.headers?.['content-length']} body=${response.body?.length}`)
+    check(`${look}/${file}: carries the GIF magic`,
+      response.body?.subarray(0, 3).toString('latin1') === 'GIF', String(response.body?.subarray(0, 3)))
+  }
 }
 
+// A look has to be complete: a half-drawn skin would show the wrong creature for
+// whichever state happened to be missing.
+for (const look of LOOKS) {
+  const missing = [...ALL_ASSETS].filter(name => !existsSync(join(HERE, 'assets', look, name)))
+  check(`${look}: every sprite and mark is drawn`, missing.length === 0, missing.join(', '))
+}
+
+// ── the chosen look ───────────────────────────────────────────────────────────
+const chosen = await call('POST', '/api/dsh-pet/look', { look: 'crazy' })
+check('the look can be switched', chosen.status === 200 && json(chosen)?.look === 'crazy',
+  `${chosen.status} ${chosen.body}`)
+check('the state reports the new look',
+  json(await call('GET', '/api/dsh-pet/state'))?.look === 'crazy', '')
+
+const bogus = await call('POST', '/api/dsh-pet/look', { look: '../../etc/passwd' })
+check('an unknown look is refused', bogus.status === 400, `${bogus.status} ${bogus.body}`)
+check('a refused look does not change the state',
+  json(await call('GET', '/api/dsh-pet/state'))?.look === 'crazy', '')
+
+const noLook = await call('POST', '/api/dsh-pet/look', {})
+check('a look without a name is refused', noLook.status === 400, String(noLook.status))
+
+const getLook = await call('GET', '/api/dsh-pet/look')
+check('the look route only accepts POST', getLook.status === 405, String(getLook.status))
+
 // ── refusals ──────────────────────────────────────────────────────────────────
-const unknown = await call('GET', '/api/dsh-pet/assets/nope.gif')
+const unknown = await call('GET', '/api/dsh-pet/assets/main/nope.gif')
 check('an unlisted name is a 404', unknown.status === 404, String(unknown.status))
 
-const traversal = await call('GET', '/api/dsh-pet/assets/..%2F..%2Fpackage.json')
+const badLook = await call('GET', '/api/dsh-pet/assets/../../package.json')
+check('an unknown look directory is a 404', badLook.status === 404, String(badLook.status))
+
+const traversal = await call('GET', '/api/dsh-pet/assets/main/..%2F..%2Fpackage.json')
 check('a traversal attempt is refused, not resolved',
   traversal.status === 404
     && !String(traversal.body).includes('"name"')
@@ -235,11 +273,11 @@ check('an unencoded traversal is a 404', plain.status === 404, String(plain.stat
 const dir = await call('GET', '/api/dsh-pet/assets/')
 check('the bare directory is a 404', dir.status === 404, String(dir.status))
 
-const post = await call('POST', '/api/dsh-pet/assets/Idle.gif')
+const post = await call('POST', '/api/dsh-pet/assets/main/Idle.gif')
 check('POST is refused with 405', post.status === 405 && post.headers?.allow === 'GET, HEAD',
   `${post.status} allow=${post.headers?.allow}`)
 
-const head = await call('HEAD', '/api/dsh-pet/assets/Idle.gif')
+const head = await call('HEAD', '/api/dsh-pet/assets/main/Idle.gif')
 check('HEAD answers 200 with a length and no body',
   head.status === 200 && Number(head.headers?.['content-length']) > 0 && head.body === undefined,
   `${head.status} len=${head.headers?.['content-length']}`)

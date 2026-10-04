@@ -44,6 +44,9 @@ function arg(name, fallback) {
 const SIZE = Math.max(48, Number(arg('size', '120')) || 120)
 const MARGIN = Math.max(0, Number(arg('margin', '24')) || 24)
 const ASSETS = arg('assets', '')
+/** Which drawn look to show. The host passes this on every start. */
+const LOOKS = ['main', 'crazy']
+let LOOK = LOOKS.includes(arg('look', 'main')) ? arg('look', 'main') : 'main'
 const SELFTEST = process.argv.includes('--selftest')
 const START_X = Number(arg('x', 'NaN'))
 const START_Y = Number(arg('y', 'NaN'))
@@ -104,8 +107,12 @@ let lastState
 let stateTimer
 
 /** file:// URLs for the sprites; pathToFileURL encodes the Cyrillic path. */
+function assetUrlFor(which, name) {
+  return pathToFileURL(path.join(ASSETS, which, name)).href
+}
+
 function assetUrl(name) {
-  return pathToFileURL(path.join(ASSETS, name)).href
+  return assetUrlFor(LOOK, name)
 }
 
 let win
@@ -365,7 +372,7 @@ function createWindow() {
       (query, [state, file]) => ({ ...query, [state]: assetUrl(file) }),
       Object.entries(MARKS).reduce(
         (query, [kind, file]) => ({ ...query, [`mark-${kind}`]: assetUrl(file) }),
-        { size: String(SIZE), state: 'idle', morphMs: String(MORPH_MS) },
+        { size: String(SIZE), state: 'idle', morphMs: String(MORPH_MS), look: LOOK },
       ),
     ),
   })
@@ -377,9 +384,114 @@ function createWindow() {
   win.on('closed', () => { win = undefined; endDrag() })
 }
 
+// ── the style menu ──────────────────────────────────────────────────────────
+
+/**
+ * A second, tiny window for the menu that a right-click opens.
+ *
+ * It cannot be drawn inside the pet's own window: that window is exactly the
+ * size of the sprite, with a transparent background and no focus, so a panel
+ * would be clipped and could not be clicked. This one is focusable on purpose,
+ * because a menu has to take clicks and close when it loses them.
+ */
+let menu
+
+function closeMenu() {
+  if (menu === undefined || menu.isDestroyed()) { menu = undefined; return }
+  menu.destroy()
+  menu = undefined
+}
+
+function openMenu() {
+  closeMenu()
+  if (win === undefined || win.isDestroyed()) return
+
+  const anchor = win.getBounds()
+  const width = 168
+  const height = 132
+  const area = screen.getDisplayNearestPoint({ x: anchor.x, y: anchor.y }).workArea
+  const scale = screen.getDisplayNearestPoint({ x: anchor.x, y: anchor.y }).scaleFactor || 1
+  const areaX = Math.round(area.x / scale)
+  const areaY = Math.round(area.y / scale)
+  const areaW = Math.round(area.width / scale)
+  const areaH = Math.round(area.height / scale)
+
+  // Above the pet when there is room, below it otherwise, and always on screen.
+  let x = anchor.x
+  let y = anchor.y - height - 6
+  if (y < areaY) y = anchor.y + anchor.height + 6
+  x = Math.min(Math.max(x, areaX), Math.max(areaX, areaX + areaW - width))
+  y = Math.min(Math.max(y, areaY), Math.max(areaY, areaY + areaH - height))
+
+  menu = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    focusable: true,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  })
+  menu.setAlwaysOnTop(true, 'screen-saver')
+  menu.loadFile(path.join(__dirname, 'menu.html'), {
+    query: { look: LOOK, looks: LOOKS.join(',') },
+  })
+  menu.once('ready-to-show', () => { menu?.show(); menu?.focus() })
+  // Clicking anywhere else dismisses it, which is what a menu should do.
+  menu.on('blur', closeMenu)
+  menu.on('closed', () => { menu = undefined })
+}
+
 ipcMain.on('pet:drag-start', beginDrag)
 ipcMain.on('pet:drag-end', endDrag)
 ipcMain.on('pet:close', () => app.quit())
+ipcMain.on('pet:menu', openMenu)
+
+/**
+ * Switch looks without restarting the pet.
+ *
+ * The window keeps its size, its state and its position; only the ten sprite
+ * layers change their source. The choice is also reported to the host half so
+ * it survives the pet being hidden and shown again.
+ */
+function switchLook(next) {
+  if (!LOOKS.includes(next) || next === LOOK) return
+  LOOK = next
+  closeMenu()
+  if (win !== undefined && !win.isDestroyed()) {
+    win.webContents.send('pet:look', {
+      look: LOOK,
+      sprites: Object.fromEntries(Object.entries(SPRITES).map(([state, file]) => [state, assetUrl(file)])),
+      marks: Object.fromEntries(Object.entries(MARKS).map(([kind, file]) => [`mark-${kind}`, assetUrl(file)])),
+    })
+  }
+  if (API !== '') {
+    void fetch(`${API}/look`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ look: LOOK }),
+    }).catch(() => { /* the host half may be reloading */ })
+  }
+}
+
+ipcMain.on('pet:look', (_event, next) => switchLook(next))
+
+/** Exit from the menu: take the pet off the screen, nothing more. */
+ipcMain.on('pet:exit', () => app.quit())
+ipcMain.on('pet:menu-close', closeMenu)
 
 // ── status from the host half ───────────────────────────────────────────────
 
@@ -400,6 +512,12 @@ async function pollState() {
     const snapshot = await response.json()
     const next = snapshot?.state
     if (!STATES.includes(next)) return
+
+    // The host half is the authority on the look, so a change made anywhere —
+    // the menu, the config, the route — reaches the window on the next poll.
+    const wanted = snapshot?.look
+    if (LOOKS.includes(wanted) && wanted !== LOOK) switchLook(wanted)
+
     const mark = typeof snapshot?.mark === 'string' ? snapshot.mark : null
     const key = `${next}|${mark ?? ''}`
     if (key === lastState) return
@@ -601,6 +719,80 @@ async function selftest() {
     await new Promise(resolve => setTimeout(resolve, 260))
   } catch (error) {
     payload.statesError = String(error)
+  }
+
+  // The style menu is a second window with its own page, its own policy and its
+  // own script, so it is opened for real and asked what it painted. A page whose
+  // script was blocked opens as an empty rectangle and looks fine otherwise.
+  try {
+    openMenu()
+    await new Promise(resolve => setTimeout(resolve, 800))
+    const opened = menu
+    payload.menu = {
+      exists: opened !== undefined && !opened.isDestroyed(),
+      loaded: opened !== undefined && !opened.isDestroyed() && !opened.webContents.isLoading(),
+      ...(opened === undefined || opened.isDestroyed() ? {} :
+        await opened.webContents.executeJavaScript(`(() => {
+          const panel = document.getElementById('panel')
+          const exit = document.getElementById('exit')
+          return {
+            rows: [...document.querySelectorAll('#items .item')].map(row => ({
+              look: row.dataset.look,
+              ticked: row.querySelector('.tick').textContent.trim() !== '',
+            })),
+            exitLabel: exit.querySelector('.name').textContent.trim(),
+            exitAfterLooks: [...panel.children].indexOf(exit) === panel.children.length - 1,
+            panelBackground: getComputedStyle(panel).backgroundColor,
+          }
+        })()`)),
+    }
+    closeMenu()
+    await new Promise(resolve => setTimeout(resolve, 200))
+  } catch (error) {
+    payload.menuError = String(error)
+  }
+
+  // Switching looks has to reload the sprites, not merely remember a name, and
+  // it must not disturb what the pet is showing.
+  try {
+    await win.webContents.executeJavaScript(
+      `window.__petSetHover(false), window.__petSetState('waiting'), true`)
+    win.webContents.send('pet:state', { state: 'waiting', mark: 'approval' })
+    await new Promise(resolve => setTimeout(resolve, 400))
+
+    const readSources = `(() => ({
+      layer: document.body.dataset.state,
+      mark: document.body.dataset.mark,
+      sources: Object.fromEntries(${JSON.stringify(Object.keys(SPRITES))}.map(state =>
+        [state, document.getElementById(state).getAttribute('src')])),
+    }))()`
+    const before = await win.webContents.executeJavaScript(readSources)
+
+    const other = LOOKS.find(candidate => candidate !== LOOK)
+    win.webContents.send('pet:look', {
+      look: other,
+      sprites: Object.fromEntries(Object.entries(SPRITES)
+        .map(([state, file]) => [state, assetUrlFor(other, file)])),
+      marks: Object.fromEntries(Object.entries(MARKS)
+        .map(([kind, file]) => [`mark-${kind}`, assetUrlFor(other, file)])),
+    })
+    await new Promise(resolve => setTimeout(resolve, 900))
+    const after = await win.webContents.executeJavaScript(readSources)
+
+    const urls = Object.values(after.sources)
+    payload.lookSwitch = {
+      look: other,
+      changed: urls.every((url, index) =>
+        url !== Object.values(before.sources)[index] && String(url).includes(`/${other}/`)),
+      allOtherDirectory: urls.every(url => String(url).includes(`/${other}/`)),
+      layerBefore: before.layer,
+      layerAfter: after.layer,
+      markBefore: before.mark,
+      markAfter: after.mark,
+    }
+    await win.webContents.executeJavaScript(`window.__petSetState('idle'), true`)
+  } catch (error) {
+    payload.lookError = String(error)
   }
 
   // Drive the drag the way the page does and check the window follows the

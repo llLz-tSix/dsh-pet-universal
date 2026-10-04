@@ -58,19 +58,27 @@ class Whale:
     colour and drawing a new arc, because the source is a single flat PNG with no
     layers. The eye boxes are found by flood fill rather than hard-coded, so a
     replacement sprite with slightly different eyes still works.
+
+    `look` picks which face the skin rests on. The wild one is painted over the
+    drawing before anything else touches it, so every expression in that skin
+    keeps the grin — only the eyes change.
     """
 
-    def __init__(self, plain, fountain=None):
+    def __init__(self, plain, fountain=None, look="main"):
+        self.look = look
+        self._raw = plain
         self.plain = plain
         self.fountain = fountain
         self.eyes = [self._blob((10, 49)), self._blob((30, 49))]
         self.skin = self._skin()
         self._faces = {}
         self._fountain_pixels()
+        if look != "main":
+            self.plain = self.face(look)
 
     # -- geometry ---------------------------------------------------------
     def _blob(self, seed):
-        array = np.array(self.plain)
+        array = np.array(self._raw)
         dark = (array[..., :3].astype(int).sum(axis=2) < 200) & (array[..., 3] > 0)
         seen, queue, points = {seed}, deque([seed]), []
         while queue:
@@ -88,7 +96,7 @@ class Whale:
 
     def _skin(self):
         """The colour surrounding the eyes, sampled rather than assumed."""
-        array = np.array(self.plain)
+        array = np.array(self._raw)
         counts = {}
         for (x0, y0, x1, y1) in self.eyes:
             for y in range(max(0, y0 - 3), min(SRC, y1 + 4)):
@@ -100,12 +108,17 @@ class Whale:
         return max(counts, key=counts.get)
 
     def _fountain_pixels(self):
-        """The jet, as (x, y, colour, distance from the blowhole)."""
+        """The jet, as (x, y, colour, distance from the blowhole).
+
+        Compared against the untouched drawing, not the skin's resting face:
+        against a repainted face every changed pixel would count as water and
+        the whale would spout out of its own eyes.
+        """
         self.fountain_pixels = []
         self.fountain_max = 0.0
         if self.fountain is None:
             return
-        plain, fount = np.array(self.plain), np.array(self.fountain)
+        plain, fount = np.array(self._raw), np.array(self.fountain)
         mask = (plain != fount).any(axis=2)
         distances = []
         for y in range(SRC):
@@ -118,12 +131,15 @@ class Whale:
 
     # -- faces ------------------------------------------------------------
     def face(self, mode):
-        """open | half | closed (a sleepy arc) | happy (a contented arc)."""
+        """open | half | closed (a sleepy arc) | happy (a contented arc) | crazy."""
         if mode in self._faces:
             return self._faces[mode]
         if mode == "open":
             self._faces[mode] = self.plain
             return self.plain
+        if mode == "crazy":
+            self._faces[mode] = self._crazy()
+            return self._faces[mode]
 
         image = self.plain.copy()
         draw = ImageDraw.Draw(image)
@@ -143,6 +159,51 @@ class Whale:
                         dy = 0 if 0.2 <= t <= 0.8 else -1         # closed, asleep
                     draw.point((x, row + dy), fill=EYE_DARK)
         self._faces[mode] = image
+        return image
+
+    def _crazy(self):
+        """The wild face: wide eyes and an open, toothy grin.
+
+        Everything is painted over the base sprite, because the source is one
+        flat image with no layers — including the original smile, which would
+        otherwise stay visible underneath the new mouth. The eyes are grown from
+        the boxes the flood fill found, so a replacement sprite with slightly
+        different eyes still works.
+
+        The eyes sit higher and the mouth lower than they first look like they
+        should: at the base positions the two touch and the whole face reads as
+        one dark mass. The mouth also stops short of the belly, which begins
+        around row 58.
+        """
+        image = self._raw.copy()
+        draw = ImageDraw.Draw(image)
+
+        # The old smile and the blush under it live between the eyes.
+        draw.rectangle([13, 48, 35, 60], fill=self.skin)
+
+        for (x0, y0, x1, y1) in self.eyes:
+            cx = (x0 + x1) // 2
+            cy = (y0 + y1) // 2 - 2
+            draw.rectangle([x0 - 3, y0 - 3, x1 + 3, y1 + 3], fill=self.skin)
+            # A round eye, drawn row by row. Cutting the corners off a square
+            # leaves visible nubs at this size; a swept circle does not.
+            radius = 5
+            for dy in range(-radius, radius + 1):
+                half = int(round(radius * math.sqrt(max(0.0, 1 - (dy / radius) ** 2))))
+                draw.rectangle([cx - half, cy + dy, cx + half, cy + dy], fill=EYE_DARK)
+            # Both eyes shine from the same corner, as they do in the drawing.
+            draw.rectangle([cx - 4, cy - 4, cx - 2, cy - 2], fill=WHITE)
+            draw.rectangle([cx + 2, cy + 2, cx + 3, cy + 3], fill=C_PALE)
+
+        # An open grin, tapering towards the bottom, with a row of teeth.
+        left, right, top, bottom = 14, 34, 54, 58
+        for y in range(top, bottom + 1):
+            inset = max(0, (y - top) - 2)
+            draw.rectangle([left + inset, y, right - inset, y], fill=EYE_DARK)
+        for y in (top, top + 1):
+            for x in range(left + 3, right - 2):
+                if (x - left) % 4 != 3:
+                    draw.point((x, y), fill=WHITE)
         return image
 
     # -- drawing ----------------------------------------------------------
@@ -302,9 +363,11 @@ def edge_margin(frames):
     return worst
 
 
-def save(frames, name, duration, preview=None, ambient=None):
+def save(frames, name, duration, preview=None, ambient=None, look="main"):
     """Encode frames into a GIF with one exact palette shared by the whole set."""
-    path = os.path.join(ASSETS, name)
+    directory = os.path.join(ASSETS, look)
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, name)
 
     # The creature is checked as it is placed; this is only for the record, since
     # decorative bubbles are meant to drift out of frame.
@@ -359,10 +422,10 @@ def save(frames, name, duration, preview=None, ambient=None):
             cell = Image.new("RGB", (CAN, CAN), (18, 26, 54))
             cell.paste(frames[index], (0, 0), frames[index])
             sheet.paste(cell.resize((120, 120), Image.NEAREST), (i * 120, 0))
-        sheet.save(os.path.join(HERE, f"preview-{name.replace('.gif', '')}.png"))
+        sheet.save(os.path.join(HERE, f"preview-{look}-{name.replace('.gif', '')}.png"))
 
 
-def save_mark(name, pixels):
+def save_mark(name, pixels, look="main"):
     """A tiny overlay glyph (a waiting mark), drawn 1:1 and upscaled by CSS.
 
     The size comes from the glyph itself, so a taller mark is never clipped.
@@ -373,6 +436,8 @@ def save_mark(name, pixels):
     draw = ImageDraw.Draw(image)
     for (x, y, colour) in pixels:
         draw.point((x, y), fill=colour)
+    directory = os.path.join(ASSETS, look)
+    os.makedirs(directory, exist_ok=True)
     image.resize((width * SCALE, height * SCALE), Image.NEAREST).save(
-        os.path.join(ASSETS, name))
+        os.path.join(directory, name))
     print("saved %-18s %dx%d" % (name, width * SCALE, height * SCALE))

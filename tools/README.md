@@ -15,12 +15,20 @@ these scripts are what made them visible.
 ## Building the art
 
 ```powershell
-python tools\whale_art.py whale_pixel.png whale_pixel_fountain.png
+python tools\whale_art.py whale_pixel.png whale_pixel_fountain.png main,crazy
 ```
 
 The first sprite is the whale with open eyes; the second adds the water jet used
 by the joy animation. Both are optional arguments — without them the script looks
-for those names next to itself.
+for those names next to itself. The third argument lists which looks to build and
+defaults to both.
+
+A look is a resting face, not a separate creature. `main` is the drawing as it
+came; `crazy` is painted over it — round eyes, a wide toothy grin — and every
+expression in that look is built on top, so the grin survives blinking, cheering
+and sleeping while only the eyes change. Everything else is shared: the same
+bodies, poses and timings, which is why the two sets are the same size and why a
+switch between them does not move the pet by a pixel.
 
 Everything is authored on a native 80×80 grid, pasted onto a 120×120 canvas at a
 fixed offset, and upscaled ×4 with NEAREST. That framing is the whole point of

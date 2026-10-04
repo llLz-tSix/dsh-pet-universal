@@ -41,4 +41,16 @@ contextBridge.exposeInMainWorld('petWindow', {
     ipcRenderer.on('pet:facing', listener)
     return () => ipcRenderer.removeListener('pet:facing', listener)
   },
+  /** Right-click: ask the main process to open the style menu. */
+  menu: () => ipcRenderer.send('pet:menu'),
+  /** The look changed: reload every layer from the new set of sprites. */
+  onLook: handler => {
+    const listener = (_event, payload) => handler(payload)
+    ipcRenderer.on('pet:look', listener)
+    return () => ipcRenderer.removeListener('pet:look', listener)
+  },
+  /** Menu only: pick a look, close the menu, or take the pet off the screen. */
+  chooseLook: look => ipcRenderer.send('pet:look', look),
+  dismiss: () => ipcRenderer.send('pet:menu-close'),
+  exit: () => ipcRenderer.send('pet:exit'),
 })

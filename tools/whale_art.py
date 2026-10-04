@@ -24,9 +24,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLAIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "whale_pixel.png")
 FOUNTAIN = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, "whale_pixel_fountain.png")
 
+# Which looks to build. Both are the same creature in the same poses; only the
+# resting face differs, so every animation exists twice and a skin change is a
+# change of directory rather than a change of choreography.
+LOOKS = (sys.argv[3].split(",") if len(sys.argv) > 3 else ["main", "crazy"])
+
 whale = Whale(load_sprite(PLAIN),
-              load_sprite(FOUNTAIN) if os.path.exists(FOUNTAIN) else None)
-print("eye boxes:", whale.eyes, "| skin:", whale.skin)
+              load_sprite(FOUNTAIN) if os.path.exists(FOUNTAIN) else None,
+              look=LOOKS[0])
+print("eye boxes:", whale.eyes, "| skin:", whale.skin, "| looks:", ",".join(LOOKS))
 
 # Attention colour. The harness paints a waiting session with its own "warning"
 # accent, so the pet asks for the user in the same colour rather than inventing
@@ -481,26 +487,46 @@ def joy_frames():
 # loop of a different length drifts out of step with the others and whatever the
 # scene contains — bubbles, sparkles — visibly teleports when the pet switches.
 AMBIENT_MS = {}
-save(idle_frames(), "Idle.gif", IDLE_DUR, preview=[0, 6, 12, 18, 21, 30], ambient=AMBIENT_MS)
-save(foam_frames(), "idle-bubble.gif", FOAM_DUR, preview=[0, 8, 15, 22, 27, 33], ambient=AMBIENT_MS)
-save(joy_frames(), "alive.gif", JOY_DUR, preview=[0, 10, 22, 33, 40, 50], ambient=AMBIENT_MS)
-save(thinking_frames(), "thinking.gif", THINK_DUR, preview=[0, 9, 18, 27, 30, 33], ambient=AMBIENT_MS)
-save(waiting_frames(), "waiting.gif", WAIT_DUR, preview=[0, 4, 9, 13, 18, 22], ambient=AMBIENT_MS)
-save(float_frames(), "float.gif", FLOAT_DUR, preview=[0, 6, 12, 18, 24, 30], ambient=AMBIENT_MS)
 
-# Sleep and the one-shot events are deliberately a different length: a slow bob
-# is the point of dozing off, and the transformation must not be cut short.
-save(sleep_frames(), "sleep.gif", SLEEP_DUR, preview=[0, 8, 16, 24, 32, 40])
-save(held_frames(), "held.gif", HELD_DUR, preview=[0, 2, 4, 6, 8, 10])
-save(drop_frames(), "drop.gif", DROP_DUR, preview=[0, 1, 2, 3, 5, 9])
-save(done_frames(), "done.gif", DONE_DUR, preview=[0, 4, 6, 7, 12, 20])
+
+def build(look):
+    """Render every state for one look."""
+    global whale
+    whale = Whale(load_sprite(PLAIN),
+                  load_sprite(FOUNTAIN) if os.path.exists(FOUNTAIN) else None,
+                  look=look)
+    print(f"--- look {look}")
+
+    save(idle_frames(), "Idle.gif", IDLE_DUR, preview=[0, 6, 12, 18, 21, 30],
+         ambient=AMBIENT_MS, look=look)
+    save(foam_frames(), "idle-bubble.gif", FOAM_DUR, preview=[0, 8, 15, 22, 27, 33],
+         ambient=AMBIENT_MS, look=look)
+    save(joy_frames(), "alive.gif", JOY_DUR, preview=[0, 10, 22, 33, 40, 50],
+         ambient=AMBIENT_MS, look=look)
+    save(thinking_frames(), "thinking.gif", THINK_DUR, preview=[0, 9, 18, 27, 30, 33],
+         ambient=AMBIENT_MS, look=look)
+    save(waiting_frames(), "waiting.gif", WAIT_DUR, preview=[0, 4, 9, 13, 18, 22],
+         ambient=AMBIENT_MS, look=look)
+    save(float_frames(), "float.gif", FLOAT_DUR, preview=[0, 6, 12, 18, 24, 30],
+         ambient=AMBIENT_MS, look=look)
+
+    # Sleep and the one-shot events are deliberately a different length: a slow
+    # bob is the point of dozing off, and the transformation must not be cut short.
+    save(sleep_frames(), "sleep.gif", SLEEP_DUR, preview=[0, 8, 16, 24, 32, 40], look=look)
+    save(held_frames(), "held.gif", HELD_DUR, preview=[0, 2, 4, 6, 8, 10], look=look)
+    save(drop_frames(), "drop.gif", DROP_DUR, preview=[0, 1, 2, 3, 5, 9], look=look)
+    save(done_frames(), "done.gif", DONE_DUR, preview=[0, 4, 6, 7, 12, 20], look=look)
+
+    save_mark("mark-approval.png", glyph(APPROVAL, AMBER), look=look)
+    save_mark("mark-question.png", glyph(QUESTION, AMBER), look=look)
+    save_mark("mark-plan.png", glyph(PLAN, AMBER), look=look)
+
+
+for _look in LOOKS:
+    build(_look)
 
 lengths = set(AMBIENT_MS.values())
 if len(lengths) != 1:
     raise SystemExit(f"ambient loops differ in length and will drift apart: {AMBIENT_MS}")
-print("ambient loops all %d ms: %s" % (lengths.pop(), ", ".join(sorted(AMBIENT_MS))))
-
-save_mark("mark-approval.png", glyph(APPROVAL, AMBER))
-save_mark("mark-question.png", glyph(QUESTION, AMBER))
-save_mark("mark-plan.png", glyph(PLAN, AMBER))
+print("ambient loops all %d ms across %d looks" % (lengths.pop(), len(LOOKS)))
 print("done")

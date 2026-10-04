@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DESKTOP_DIR = join(HERE, 'desktop')
-const ASSET_DIR = join(HERE, 'assets')
+const ASSET_DIR = join(HERE, 'assets', 'main')
+/** The look the window is started in, and the other one it can switch to. */
+const LOOK = 'main'
+const OTHER_LOOK = 'crazy'
 const RESULT = join(DESKTOP_DIR, 'selftest.json')
 const CAPTURE = join(DESKTOP_DIR, 'selftest.png')
 
@@ -43,8 +46,10 @@ const electron = candidates.find(candidate =>
 check('a plain Electron runtime is found', electron !== undefined,
   electron ?? `tried ${candidates.join(' | ')}`)
 check('the desktop app is present', existsSync(join(DESKTOP_DIR, 'main.js')), DESKTOP_DIR)
-check('both sprites are present',
-  existsSync(join(ASSET_DIR, 'Idle.gif')) && existsSync(join(ASSET_DIR, 'alive.gif')), ASSET_DIR)
+const ASSETS_ROOT = join(HERE, 'assets')
+check('both looks are drawn, and completely',
+  ['main', 'crazy'].every(look => existsSync(join(ASSETS_ROOT, look, 'Idle.gif'))
+    && existsSync(join(ASSETS_ROOT, look, 'alive.gif'))), ASSETS_ROOT)
 
 if (electron === undefined) {
   console.log('\ncannot continue without an Electron runtime')
@@ -64,7 +69,8 @@ const launch = async extraArgs => {
       DESKTOP_DIR,
       '--selftest',
       '--size=96',
-      `--assets=${ASSET_DIR}`,
+      `--assets=${ASSETS_ROOT}`,
+      `--look=${LOOK}`,
       // Long enough that the one-shot transformation cannot fire in the middle
       // of the per-state sweep; the hand-over is checked separately below.
       '--morphMs=1200',
@@ -295,6 +301,45 @@ for (const file of ['mark-approval.png', 'mark-question.png', 'mark-plan.png']) 
   const path = join(ASSET_DIR, file)
   check(`${file} is present`, statSync(path).size > 50, `${statSync(path).size} bytes`)
 }
+
+// Every look must be a complete set: a missing state in one of them would mean
+// switching mid-turn shows the wrong creature.
+for (const look of [LOOK, OTHER_LOOK]) {
+  const dir = join(ASSETS_ROOT, look)
+  const files = ['Idle.gif', 'idle-bubble.gif', 'alive.gif', 'thinking.gif', 'waiting.gif',
+                 'sleep.gif', 'held.gif', 'drop.gif', 'done.gif', 'float.gif',
+                 'mark-approval.png', 'mark-question.png', 'mark-plan.png']
+  const missing = files.filter(file => !existsSync(join(dir, file)))
+  check(`look ${look} has all thirteen files`, missing.length === 0, missing.join(', '))
+}
+
+// ── the style menu ────────────────────────────────────────────────────────────
+const menuShot = report?.menu
+check('the right-click menu opens as its own window',
+  menuShot?.exists === true && menuShot?.loaded === true, JSON.stringify(menuShot))
+check('the menu lists every look and nothing else',
+  menuShot?.rows?.length === 2 && menuShot.rows[0].look === 'main' && menuShot.rows[1].look === 'crazy',
+  JSON.stringify(menuShot?.rows))
+check('the menu marks the active look',
+  menuShot?.rows?.filter(row => row.ticked).length === 1
+    && menuShot.rows.find(row => row.ticked)?.look === LOOK,
+  JSON.stringify(menuShot?.rows))
+check('the menu has Exit at the bottom',
+  menuShot?.exitAfterLooks === true && menuShot?.exitLabel === 'Выход',
+  `label=${JSON.stringify(menuShot?.exitLabel)}`)
+check('the menu page ran its script (a too-strict CSP kills it silently)',
+  menuShot?.panelBackground !== 'rgba(0, 0, 0, 0)'
+    && menuShot?.panelBackground !== 'transparent',
+  String(menuShot?.panelBackground))
+
+// Switching looks has to reload the sprites, not just remember a name.
+const switched = report?.lookSwitch
+check('the look switch reloads every sprite from the other set',
+  switched?.changed === true && switched?.allOtherDirectory === true,
+  JSON.stringify(switched))
+check('the state and the mark survive a look switch',
+  switched?.layerAfter === switched?.layerBefore && switched?.markAfter === switched?.markBefore,
+  `before=${switched?.layerBefore}/${switched?.markBefore} after=${switched?.layerAfter}/${switched?.markAfter}`)
 
 rmSync(RESULT, { force: true })
 rmSync(CAPTURE, { force: true })

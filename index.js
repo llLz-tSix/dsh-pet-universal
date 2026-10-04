@@ -22,7 +22,7 @@
  *                    anything: only a component inside the app window can.
  */
 import { readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
@@ -59,6 +59,13 @@ const ASSETS = new Map([
   ['mark-plan.png', 'image/png'],
 ])
 
+/**
+ * The looks the art is drawn in. Each is a complete set of every sprite, so a
+ * look is a directory rather than a substitution: the same creature, the same
+ * poses, a different face.
+ */
+const LOOKS = ['main', 'crazy']
+
 /** The three kinds of "the agent is blocked on you". */
 const PENDING_KINDS = ['approval', 'question', 'plan-review']
 
@@ -74,6 +81,8 @@ let unread = false
 let finished = false
 /** What the pet shows when the pointer is not on it. */
 let state = 'idle'
+/** Which look the pet is drawn in. */
+let look = 'main'
 /** Set by the click of the floating pet, collected by the browser half. */
 let openChatRequested = false
 /** Base URL of our own routes, handed to the child so it can call back. */
@@ -85,6 +94,10 @@ export function apply(ctx, config) {
   // `autoStart: false` keeps the pet off the desktop until `/show` is called;
   // the test suite uses it so nothing pops up over whatever is on screen.
   const autoStart = config?.autoStart !== false
+  // A look chosen from the pet's own menu outlives the window it was chosen in.
+  // The config wins when it names one, so a profile can pin a look deliberately.
+  if (LOOKS.includes(config?.look)) look = config.look
+  else look = readLook()
 
   ctx.inject(['webServer'], scoped => {
     scoped.effect(
@@ -101,6 +114,39 @@ export function apply(ctx, config) {
     if (autoStart) void startPet({ size, margin })
     ctx.logger?.info?.(`dsh-pet: pet started at ${PREFIX}`)
   })
+}
+
+// ── the chosen look ──────────────────────────────────────────────────────────
+
+/**
+ * Where the chosen look is remembered.
+ *
+ * Deliberately not the plugin's own directory: that is a git checkout, and a
+ * preference file appearing in it would show up in every diff. It goes beside
+ * the harness's own data instead, and a failure to write it is not worth
+ * surfacing — the worst case is that a look resets on the next start.
+ */
+function lookFile() {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'dsh-pet.json')
+}
+
+function readLook() {
+  try {
+    const saved = JSON.parse(readFileSync(lookFile(), 'utf8'))
+    return LOOKS.includes(saved?.look) ? saved.look : 'main'
+  } catch {
+    return 'main'                                   // absent or unreadable: the default
+  }
+}
+
+function writeLook(next) {
+  try {
+    mkdirSync(dirname(lookFile()), { recursive: true })
+    writeFileSync(lookFile(), JSON.stringify({ look: next }, null, 2) + '\n')
+  } catch {
+    /* a preference that cannot be saved is not a reason to break the pet */
+  }
 }
 
 // ── the floating window ──────────────────────────────────────────────────────
@@ -148,7 +194,13 @@ async function startPet(options = {}) {
   // Without this the child runs as plain node and never creates a window.
   delete env.ELECTRON_RUN_AS_NODE
 
-  const args = [DESKTOP_DIR, `--assets=${ASSET_DIR}`]
+  const args = [
+    DESKTOP_DIR,
+    `--assets=${ASSET_DIR}`,
+    // The look is passed on every start, so a skin choice survives the pet being
+    // hidden and shown again.
+    `--look=${look}`,
+  ]
   if (baseUrl !== '') args.push(`--api=${baseUrl}`)
   if (typeof options.size === 'number' && Number.isFinite(options.size)) {
     args.push(`--size=${clampSize(options.size)}`)
@@ -282,7 +334,19 @@ async function serve(req, res) {
     if (method !== 'GET' && method !== 'HEAD') return fail(res, 405, 'GET, HEAD')
     // `mark` carries which kind of waiting it is, so the window can pick the
     // right glyph without a second round trip.
-    return json(res, 200, { alive: pet !== null, running, state, mark: pending, unread })
+    return json(res, 200, { alive: pet !== null, running, state, mark: pending, unread, look })
+  }
+
+  // The pet's own style menu. Switching looks is a live change: the window
+  // reloads its sprites from the other directory and keeps its state.
+  if (route === '/look') {
+    if (method !== 'POST') return fail(res, 405, 'POST')
+    const body = await readJson(req).catch(() => undefined)
+    const wanted = typeof body?.look === 'string' ? body.look : ''
+    if (!LOOKS.includes(wanted)) return json(res, 400, { ok: false, error: 'unknown look', looks: LOOKS })
+    look = wanted
+    writeLook(look)
+    return json(res, 200, { ok: true, look })
   }
 
   // Polled by the browser half. Reading the flag clears it, so one click opens
@@ -335,16 +399,21 @@ async function serve(req, res) {
 async function serveAsset(req, res, route, method) {
   if (method !== 'GET' && method !== 'HEAD') return fail(res, 405, 'GET, HEAD')
 
-  const name = route.startsWith('/assets/') ? route.slice('/assets/'.length) : ''
+  // `/assets/<look>/<name>`. Both halves are checked against fixed lists, so a
+  // request never contributes a path segment that reaches the filesystem.
+  const rest = route.startsWith('/assets/') ? route.slice('/assets/'.length) : ''
+  const slash = rest.indexOf('/')
+  const wanted = slash === -1 ? look : rest.slice(0, slash)
+  const name = slash === -1 ? rest : rest.slice(slash + 1)
   const type = ASSETS.get(name)
-  if (type === undefined) {
+  if (type === undefined || !LOOKS.includes(wanted)) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('dsh-pet: unknown asset\n')
     return
   }
 
   try {
-    const data = await readFile(join(ASSET_DIR, name))
+    const data = await readFile(join(ASSET_DIR, wanted, name))
     res.writeHead(200, {
       'content-type': type,
       'content-length': String(data.length),

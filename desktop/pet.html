@@ -145,7 +145,7 @@
     <img id="mark-approval" class="mark" alt="">
     <img id="mark-question" class="mark" alt="">
     <img id="mark-plan-review" class="mark" alt="">
-    <div id="hint">клик — открыть чат · правый клик — закрыть</div>
+    <div id="hint">клик — открыть чат · правый клик — стиль и выход</div>
   </div>
 
 <script>
@@ -359,6 +359,25 @@
     mirrored = facing === 'right'
     apply()
   })
+
+  /*
+    A look change reloads every layer from the other set of sprites. The window
+    keeps its size, its position and its state; only the images change. The
+    current layer is then re-asserted, so the switch is immediate rather than
+    waiting for the next state change.
+  */
+  window.petWindow.onLook(payload => {
+    if (payload === null || typeof payload !== 'object') return
+    const incoming = { ...payload.sprites, ...payload.marks }
+    for (const [layer, url] of Object.entries(incoming)) {
+      if (!(layer in SOURCES) || typeof url !== 'string' || url === '') continue
+      SOURCES[layer] = url
+      const img = document.getElementById(layer)
+      if (img !== null) img.src = url
+    }
+    lastLayer = null
+    apply()
+  })
   apply()
 
   // Hover shows joy. `mouseenter` does not bubble, so it is backed up by
@@ -416,8 +435,9 @@
   // glued to the cursor.
   addEventListener('blur', finishDrag)
 
-  // Right-click closes the pet. Hovering explains the gestures once.
-  addEventListener('contextmenu', event => { event.preventDefault(); window.petWindow.close() })
+  // Right-click opens the style menu — which is also where Exit lives, so
+  // nothing is lost by not closing the pet straight from the gesture.
+  addEventListener('contextmenu', event => { event.preventDefault(); window.petWindow.menu() })
   let hinted = false
   addEventListener('mouseenter', () => {
     if (hinted) return

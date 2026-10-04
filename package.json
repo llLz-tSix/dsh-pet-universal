@@ -17,10 +17,12 @@
     "desktop/main.js",
     "desktop/preload.js",
     "desktop/pet.html",
+    "desktop/menu.html",
     "desktop/package.json",
-    "assets/*.gif",
-    "assets/*.png",
-    "README.md"
+    "assets/*/*.gif",
+    "assets/*/*.png",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "dsh",
