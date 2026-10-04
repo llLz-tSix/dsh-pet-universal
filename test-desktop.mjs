@@ -164,6 +164,34 @@ check('the tick hands over to the levitation loop',
     && hidden(morph?.after?.opacity?.done),
   JSON.stringify(morph?.after))
 
+// Transitions are not all the same length, and the value has to live on the body
+// so both sides of a crossfade use it. A uniform fade makes an alert sluggish and
+// a nap abrupt.
+const fadeOf = state => parseFloat(report?.states?.[state]?.fade ?? 'NaN')
+check('an alert snaps faster than a thought',
+  fadeOf('waiting') < fadeOf('thinking'),
+  `waiting=${fadeOf('waiting')} thinking=${fadeOf('thinking')}`)
+check('resting is the slowest of the host states',
+  fadeOf('idle') > fadeOf('thinking') && fadeOf('idle') > fadeOf('done'),
+  `idle=${fadeOf('idle')} thinking=${fadeOf('thinking')} done=${fadeOf('done')}`)
+check('dozing off is the slowest transition of all',
+  parseFloat(report?.local?.sleeping?.fade ?? 'NaN') > fadeOf('idle'),
+  `sleep=${report?.local?.sleeping?.fade} idle=${report?.states?.idle?.fade}`)
+
+// A crossfade has to actually blend. Sampled across the transition, at least one
+// moment must show both layers partly visible; a hard cut never would.
+const blend = (report?.crossfade ?? []).filter(s =>
+  s.idle > 0.05 && s.idle < 0.95 && s.thinking > 0.05 && s.thinking < 0.95)
+check('switching layers really crossfades rather than cutting',
+  blend.length > 0,
+  JSON.stringify(report?.crossfade))
+
+// Hovering restarts the somersault. The layer has been looping invisibly since
+// the page loaded, so without this the whale can be revealed upside down.
+check('hovering restarts the somersault instead of catching it mid-flip',
+  report?.hover?.layer === 'joy' && String(report?.hover?.joySrc).includes('?r='),
+  `layer=${report?.hover?.layer} src=${String(report?.hover?.joySrc).slice(-24)}`)
+
 // The waiting mark. Each kind of blocked interaction gets its own glyph, and
 // only one is ever up — a pet that shows "!" and "?" together says nothing.
 for (const kind of [...MARKS, null]) {

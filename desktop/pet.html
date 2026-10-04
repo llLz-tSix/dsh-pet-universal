@@ -22,8 +22,30 @@
     user-select: none;
     -webkit-user-select: none;
     cursor: grab;
+    /* Crossfade length for THIS state, read by every layer. */
+    --fade: 200ms;
   }
   body.dragging { cursor: grabbing; }
+
+  /*
+    How long each change takes. The value lives on the body rather than on the
+    incoming layer, so both sides of a crossfade read the same number: setting it
+    per layer would fade the new sprite in at one speed while the old one lingers
+    at another, which reads as a double image rather than a transition.
+
+    The lengths are not uniform on purpose. An alert and a reaction have to snap;
+    falling asleep has to drift.
+  */
+  body[data-state="waiting"]     { --fade: 110ms; }
+  body[data-state="joy"]         { --fade: 130ms; }
+  body[data-state="held"]        { --fade: 120ms; }
+  body[data-state="drop"]        { --fade: 150ms; }
+  body[data-state="done"]        { --fade: 170ms; }
+  body[data-state="thinking"]    { --fade: 240ms; }
+  body[data-state="float"]       { --fade: 280ms; }
+  body[data-state="idle"],
+  body[data-state="idle-bubble"] { --fade: 400ms; }
+  body[data-state="sleep"]       { --fade: 650ms; }
 
   #pet { position: relative; width: 100%; height: 100%; }
 
@@ -45,7 +67,7 @@
     height: 100%;
     object-fit: contain;
     opacity: 0;
-    transition: opacity .18s ease;
+    transition: opacity var(--fade) ease;
     -webkit-user-drag: none;
     pointer-events: none;
   }
@@ -134,16 +156,43 @@
   const MARKS = ['approval', 'question', 'plan-review']
   const params = new URLSearchParams(location.search)
 
+  /** Where each layer's sprite came from, so it can be restarted later. */
+  const SOURCES = {}
+
   for (const layer of SPRITES.concat(MARKS.map(kind => `mark-${kind}`))) {
     const img = document.getElementById(layer)
-    img.src = params.get(layer)
+    const url = params.get(layer)
+    SOURCES[layer] = url
+    img.src = url
     // A sprite that fails to decode leaves an invisible window, so say so instead
     // of silently showing nothing.
     img.addEventListener('error', () => console.error('dsh-pet: cannot load ' + img.src))
   }
 
+  /**
+   * Restart a GIF from its first frame.
+   *
+   * Several animations are events rather than loops: the somersault has to begin
+   * with its dip and lean-back, the landing has to begin on impact. Left to run
+   * in the background, a layer is revealed at whatever frame it happens to be on,
+   * so hovering could catch the whale mid-flip and upside down.
+   *
+   * Chromium caches by URL, so reassigning the same src does nothing. A fresh
+   * frame is fetched through a throwaway Image and swapped in only once it has
+   * decoded, so the layer never goes blank in the middle of a crossfade.
+   */
+  let revision = 0
+  const restart = layer => {
+    const img = document.getElementById(layer)
+    const url = SOURCES[layer]
+    if (img === null || typeof url !== 'string' || url === '') return
+    const fresh = new Image()
+    fresh.onload = () => { img.src = fresh.src }
+    fresh.src = `${url}${url.includes('?') ? '&' : '?'}r=${++revision}`
+  }
+
   /** How long the clock hands over from the one-shot transformation to levitation. */
-  const MORPH_MS = Number(params.get('morphMs')) || 4400
+  const MORPH_MS = Number(params.get('morphMs')) || 4150
   /** The cheer after a click, so a click is never silent. */
   const FLASH_MS = 1400
   /** The landing animation's own length. */
@@ -188,8 +237,24 @@
     return base                       // thinking | waiting
   }
 
+  /**
+   * Layers that are events, not ambience, and so must start from frame one.
+   *
+   * `float` is here for a different reason: it takes over from the end of the
+   * transformation, where the tick sits at the middle of its bob, and its own
+   * first frame is that same middle. Restarting it lines the two up, so the
+   * hand-over is invisible instead of stepping a few pixels.
+   */
+  const RESTART_ON_ENTER = new Set(['joy', 'held', 'drop', 'done', 'float'])
+  let lastLayer = null
+
   const apply = () => {
-    document.body.dataset.state = shown()
+    const layer = shown()
+    if (layer !== lastLayer) {
+      if (RESTART_ON_ENTER.has(layer)) restart(layer)
+      lastLayer = layer
+    }
+    document.body.dataset.state = layer
     document.body.dataset.mark = (base === 'waiting' && mark !== null) ? mark : ''
     document.body.classList.toggle('mirrored', mirrored)
   }

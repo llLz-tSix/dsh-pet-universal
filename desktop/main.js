@@ -89,8 +89,15 @@ const MARKS = {
   'plan-review': 'mark-plan.png',
 }
 const STATES = Object.keys(SPRITES)
-/** How long `done.gif` runs before the looping tick takes over. */
-const MORPH_MS = Math.max(100, Number(arg('morphMs', '4400')) || 4400)
+/**
+ * How long `done.gif` runs before the looping tick takes over.
+ *
+ * A GIF cannot be told to play once — `loop=0` repeats forever — so the hand-over
+ * has to happen *before* the transformation reaches its end. At 4400 ms against a
+ * 4320 ms animation the burst restarted and flashed the whale again for eighty
+ * milliseconds. This sits comfortably inside the first pass.
+ */
+const MORPH_MS = Math.max(100, Number(arg('morphMs', '4150')) || 4150)
 
 /** Last state applied, so an unchanged poll costs nothing. */
 let lastState
@@ -497,6 +504,7 @@ async function selftest() {
         const out = {
           dataset: document.body.dataset.state,
           mark: document.body.dataset.mark,
+          fade: getComputedStyle(document.getElementById('idle')).transitionDuration,
           opacity: {},
         }
         for (const s of ${JSON.stringify(STATES)}) {
@@ -536,10 +544,39 @@ async function selftest() {
       payload.local[name] = await win.webContents.executeJavaScript(`(() => ({
         ...window.__petShown(),
         mirroredClass: document.body.classList.contains('mirrored'),
+        fade: getComputedStyle(document.getElementById('idle')).transitionDuration,
       }))()`)
     }
     await win.webContents.executeJavaScript(
       `window.__petTest.setMirrored(false), window.__petTest.setDropping(false), true`)
+
+    // Hovering must restart the somersault rather than reveal it mid-flip: the
+    // layer has been looping invisibly since the page loaded, so without a
+    // restart the whale can appear upside down the moment the pointer arrives.
+    await win.webContents.executeJavaScript(`window.__petSetHover(true), true`)
+    await new Promise(resolve => setTimeout(resolve, 500))
+    payload.hover = await win.webContents.executeJavaScript(`(() => ({
+      ...window.__petShown(),
+      joySrc: document.getElementById('joy').getAttribute('src') ?? '',
+    }))()`)
+    await win.webContents.executeJavaScript(`window.__petSetHover(false), true`)
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    // A crossfade has to be a crossfade: mid-transition both layers are partly
+    // visible. Sampled a few times because the exact frame it lands on is up to
+    // the compositor, and a hard cut would show one at 1 and the other at 0.
+    if (win !== undefined && !win.isDestroyed()) {
+      win.webContents.send('pet:state', { state: 'thinking', mark: null })
+    }
+    payload.crossfade = []
+    for (const delay of [30, 60, 90, 130]) {
+      await new Promise(resolve => setTimeout(resolve, delay === 30 ? 30 : 30))
+      payload.crossfade.push(await win.webContents.executeJavaScript(`(() => ({
+        t: ${delay},
+        idle: Number(getComputedStyle(document.getElementById('idle')).opacity),
+        thinking: Number(getComputedStyle(document.getElementById('thinking')).opacity),
+      }))()`))
+    }
 
     // The waiting mark must follow the kind, and only while waiting. Sent over
     // the real IPC channel, so the preload bridge and the page handler are
