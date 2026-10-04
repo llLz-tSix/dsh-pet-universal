@@ -1,0 +1,10 @@
+# dsh-pet bundle patch.
+#
+# One `insert` is enough for the Host half. The browser half is NOT listed here:
+# it is discovered from this package's `dsh.client` declaration in package.json
+# and served by the client-module system (a sub-path entry inside this file would
+# not carry a browser half).
+- insert:
+    - id: dsh-pet
+      name: 'dsh-pet'
+      config: {}

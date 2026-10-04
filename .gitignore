@@ -1,0 +1,20 @@
+# Build and test leftovers
+_probe_*.png
+_h1.png
+_h2.png
+_crop_*.png
+selftest.png
+selftest.json
+click.log
+trace.log
+diag.log
+states_preview.png
+__pycache__/
+*.pyc
+
+# Editors and OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

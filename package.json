@@ -1,0 +1,45 @@
+{
+  "name": "dsh-pet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Desktop pet for the DeepSeek Harness Web GUI: an idle/alive sprite driven by agent activity, draggable, hover to cheer, and detachable onto the desktop.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "desktop/main.js",
+    "desktop/preload.js",
+    "desktop/pet.html",
+    "desktop/package.json",
+    "assets/Idle.gif",
+    "assets/alive.gif",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "pet",
+    "desktop-pet"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "license": "MIT"
+}

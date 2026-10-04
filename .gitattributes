@@ -1,0 +1,9 @@
+# Keep the repository in LF regardless of the platform that clones it.
+* text=auto eol=lf
+
+# Sprites must never be touched by end-of-line conversion.
+*.gif binary
+*.png binary
+
+# PowerShell scripts are the exception: Windows tooling expects CRLF there.
+*.ps1 text eol=crlf

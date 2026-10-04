@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<!--
+  This CSP has to allow this page's own inline script and stylesheet. A bare
+  `default-src 'none'` blocks both, and it does so silently: the window opens,
+  no script runs, the sprites never get their src, and a transparent frameless
+  window with nothing in it is indistinguishable from one that never opened.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>dsh-pet</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    /* The window is exactly the sprite size; nothing may add a scrollbar. */
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+  }
+  body.dragging { cursor: grabbing; }
+
+  #pet { position: relative; width: 100%; height: 100%; }
+
+  /*
+    Every layer is mounted at once and only their opacity changes. Swapping `src`
+    would restart the GIF from frame one on each switch, so a thinking pet that
+    gets hovered would visibly stutter — and the tick would restart its fall.
+
+    Specificity matters too: `#pet img` is (1,0,1) and would beat a plain `#idle`
+    (1,0,0), leaving every layer transparent — an invisible pet that looks
+    perfectly healthy in the DOM. The state selectors below are (1,1,0), so they
+    win.
+  */
+  #pet img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    opacity: 0;
+    transition: opacity .18s ease;
+    -webkit-user-drag: none;
+    pointer-events: none;
+  }
+  body[data-state="idle"] #pet #idle         { opacity: 1; }
+  body[data-state="joy"] #pet #joy           { opacity: 1; }
+  body[data-state="thinking"] #pet #thinking { opacity: 1; }
+  body[data-state="done"] #pet #done         { opacity: 1; }
+  body[data-state="float"] #pet #float       { opacity: 1; }
+
+  #hint {
+    position: absolute;
+    inset: auto 0 6% 0;
+    text-align: center;
+    font: 10px/1.4 system-ui, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px #000, 0 0 6px #000;
+    opacity: 0;
+    transition: opacity .2s ease;
+    pointer-events: none;
+  }
+  body.hinting #hint { opacity: .9; }
+</style>
+</head>
+<body data-state="idle">
+  <div id="pet">
+    <img id="idle" alt="">
+    <img id="joy" alt="">
+    <img id="thinking" alt="">
+    <img id="done" alt="">
+    <img id="float" alt="">
+    <div id="hint">клик — открыть чат · правый клик — закрыть</div>
+  </div>
+
+<script>
+  /** Layers to mount. `float` is local and never arrives from the host. */
+  const LAYERS = ['idle', 'joy', 'thinking', 'done', 'float']
+  /** States the host half is allowed to ask for. */
+  const HOST_STATES = ['idle', 'joy', 'thinking', 'done']
+  const params = new URLSearchParams(location.search)
+
+  for (const layer of LAYERS) {
+    const img = document.getElementById(layer)
+    img.src = params.get(layer)
+    // A sprite that fails to decode leaves an invisible window, so say so instead
+    // of silently showing nothing.
+    img.addEventListener('error', () => console.error('dsh-pet: cannot load ' + img.src))
+  }
+
+  /** How long the transformation runs before the looping tick takes over. */
+  const MORPH_MS = Number(params.get('morphMs')) || 4400
+  /** How long the pet cheers after a click. */
+  const FLASH_MS = 1400
+
+  /** What the host half last asked for; hover overrides it without replacing it. */
+  let base = HOST_STATES.includes(params.get('state')) ? params.get('state') : 'idle'
+  let hovering = false
+  /**
+   * True while `done.gif` plays its one-shot transformation.
+   *
+   * The tick then stays put until the plugin says otherwise, so the animation
+   * must not loop: replaying "the whale bursts into sparks" every four seconds
+   * while the user is still reading would look like a glitch. Once the morph is
+   * over, the pet quietly switches to the seamless levitation loop.
+   */
+  let morphing = false
+  let morphTimer = null
+
+  const shown = () => (base === 'done' && !morphing ? 'float' : base)
+
+  const apply = () => {
+    // Hover, or a click's brief cheer, wins over whatever the plugin asked for:
+    // both are deliberate, momentary acts by the user.
+    document.body.dataset.state = (hovering || flashing) ? 'joy' : shown()
+  }
+
+  /** A short cheer after a click, so the click is never silent. */
+  let flashing = false
+  let flashTimer = null
+  const flash = () => {
+    flashing = true
+    apply()
+    if (flashTimer !== null) clearTimeout(flashTimer)
+    flashTimer = setTimeout(() => {
+      flashTimer = null
+      flashing = false
+      apply()
+    }, FLASH_MS)
+  }
+
+  /** Also used by the self-test, so the test exercises this exact path. */
+  window.__petSetState = next => {
+    if (!HOST_STATES.includes(next)) return
+    base = next
+    if (morphTimer !== null) {
+      clearTimeout(morphTimer)
+      morphTimer = null
+    }
+    morphing = next === 'done'
+    if (morphing) {
+      morphTimer = setTimeout(() => {
+        morphTimer = null
+        morphing = false
+        apply()
+      }, MORPH_MS)
+    }
+    apply()
+  }
+
+  /** What the page is showing right now, for the self-test. */
+  window.__petShown = () => ({ base, hovering, morphing, layer: document.body.dataset.state })
+
+  /**
+   * Force the hover state, for the self-test only.
+   *
+   * The test cannot move the physical cursor away, so a pet that happens to sit
+   * under it would legitimately show joy and the "at rest" check would fail for
+   * the wrong reason.
+   */
+  window.__petSetHover = next => {
+    hovering = next === true
+    apply()
+  }
+
+  // The main process relays the plugin's state through this bridge.
+  window.petWindow.onState(state => window.__petSetState(state))
+  // A click cheers, whether or not the chat it opens was already on screen.
+  window.petWindow.onFlash(flash)
+  apply()
+
+  // Hover shows joy. `mouseenter` does not bubble, so it is backed up by
+  // `mouseover`, which does: whichever the platform delivers, the pet reacts.
+  const enter = () => {
+    if (hovering) return
+    hovering = true
+    apply()
+  }
+  const leave = () => {
+    if (!hovering) return
+    hovering = false
+    apply()
+  }
+  addEventListener('mouseenter', enter)
+  addEventListener('mouseover', enter)
+  addEventListener('mouseleave', leave)
+  addEventListener('mouseout', event => { if (event.relatedTarget === null) leave() })
+
+  // Dragging: the page reports press and release only. The movement is produced
+  // by the main process from the real cursor, because a window dragged out from
+  // under the pointer stops receiving mousemove within a few pixels and would
+  // freeze mid-drag with a half-finished move. The main process also decides
+  // whether the press was a click, and opens the chat if it was.
+  let dragging = false
+  const beginDrag = () => {
+    // Re-arm on EVERY press, even if the previous release never arrived.
+    //
+    // A mouseup can be delivered to another window: while the pet is being
+    // dragged it sits exactly under the pointer, and the release can go to
+    // whatever takes the foreground next. Guarding on `dragging` would then leave
+    // the pet stuck mid-gesture, and since the plugin still remembered the origin
+    // of the PREVIOUS press, the next honest click would measure as a huge drag
+    // and open nothing. Pressing again always starts a fresh gesture.
+    dragging = true
+    document.body.classList.add('dragging')
+    window.petWindow.dragStart()
+  }
+  const finishDrag = () => {
+    if (!dragging) return
+    dragging = false
+    document.body.classList.remove('dragging')
+    window.petWindow.dragEnd()
+  }
+  addEventListener('mousedown', event => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    beginDrag()
+  })
+  addEventListener('mouseup', finishDrag)
+  // Losing focus mid-drag (alt-tab, a system dialog) must not leave the pet
+  // glued to the cursor.
+  addEventListener('blur', finishDrag)
+
+  // Right-click closes the pet. Hovering explains the gestures once.
+  addEventListener('contextmenu', event => { event.preventDefault(); window.petWindow.close() })
+  let hinted = false
+  addEventListener('mouseenter', () => {
+    if (hinted) return
+    hinted = true
+    document.body.classList.add('hinting')
+    setTimeout(() => document.body.classList.remove('hinting'), 4000)
+  })
+
+  addEventListener('keydown', event => { if (event.key === 'Escape') window.petWindow.close() })
+</script>
+</body>
+</html>

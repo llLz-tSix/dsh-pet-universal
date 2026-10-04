@@ -1,0 +1,7 @@
+{
+  "name": "dsh-pet-window",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Floating always-on-top pet window for the dsh-pet plugin. Launched by the plugin's host half with the shared Electron runtime; not a standalone app.",
+  "main": "main.js"
+}
